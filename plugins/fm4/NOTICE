@@ -1,0 +1,11 @@
+FM4 DSP, routing implementation, tables, parameter mappings, recipes and tests
+are original work under the local MIT LICENSE. No commercial instrument code,
+presets, ROMs or proprietary data are included.
+
+The build uses the existing Sidecar SDK ABI, linker script and runtime shims;
+the exact-package native test links the repository's loader and manifest parser.
+Those files retain their existing repository notices and licences. The AArch64
+build also links its toolchain's libm and libgcc support; retain the applicable
+Arm GNU Toolchain/newlib/GCC notices with distributions. The local MIT notice
+does not relicense any of these dependencies. See repository NOTICE,
+THIRD_PARTY_LICENSES, sdk/rmp/shim and the toolchain's share/doc licences.

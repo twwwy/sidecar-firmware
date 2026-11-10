@@ -1,0 +1,172 @@
+{
+  "id": "fm4.pm4",
+  "version": "0.1.1",
+  "compatible_from": "0.1.0",
+  "name": "FM4",
+  "short": "FM4",
+  "licence": "MIT",
+  "page2": "params",
+  "page2_title": "FM4 SHAPING",
+  "pitch": "note",
+  "max_voices": 4,
+  "knobs": [
+    {
+      "p": 1,
+      "long": "Algorithm",
+      "short": "ALGO",
+      "default": 0,
+      "role": "preset",
+      "look": "list",
+      "text": "enum",
+      "names": [
+        "STACK",
+        "DUAL",
+        "FORK",
+        "FAN",
+        "SPLIT",
+        "CROSS",
+        "RING",
+        "PARA"
+      ]
+    },
+    {
+      "p": 2,
+      "long": "Ratio",
+      "short": "RAT",
+      "default": 72,
+      "role": "preset",
+      "look": "dial",
+      "text": "number"
+    },
+    {
+      "p": 3,
+      "long": "Color",
+      "short": "COL",
+      "default": 64,
+      "role": "preset",
+      "look": "centred",
+      "text": "bipolar"
+    },
+    {
+      "p": 4,
+      "long": "FM Amount",
+      "short": "FM",
+      "default": 52,
+      "role": "preset",
+      "look": "dial",
+      "text": "number"
+    },
+    {
+      "p": 5,
+      "long": "Feedback",
+      "short": "FDBK",
+      "default": 24,
+      "role": "preset",
+      "look": "dial",
+      "text": "number"
+    },
+    {
+      "p": 6,
+      "long": "Sweep",
+      "short": "SWP",
+      "default": 96,
+      "role": "preset",
+      "look": "centred",
+      "text": "bipolar"
+    },
+    {
+      "p": 7,
+      "long": "Decay",
+      "short": "DEC",
+      "default": 64,
+      "role": "preset",
+      "look": "dial",
+      "text": "number"
+    },
+    {
+      "p": 8,
+      "long": "Morph",
+      "short": "MRPH",
+      "default": 0,
+      "role": "preset",
+      "look": "dial",
+      "text": "number"
+    },
+    {
+      "p": 9,
+      "long": "Attack",
+      "short": "ATK",
+      "default": 0,
+      "role": "preset",
+      "look": "dial",
+      "text": "number"
+    },
+    {
+      "p": 10,
+      "long": "Release",
+      "short": "REL",
+      "default": 64,
+      "role": "preset",
+      "look": "dial",
+      "text": "number"
+    },
+    {
+      "p": 11,
+      "long": "Body",
+      "short": "BODY",
+      "default": 72,
+      "role": "preset",
+      "look": "dial",
+      "text": "number"
+    },
+    {
+      "p": 12,
+      "long": "Drift",
+      "short": "DRFT",
+      "default": 8,
+      "role": "preset",
+      "look": "dial",
+      "text": "number"
+    },
+    {
+      "p": 13,
+      "long": "Velocity",
+      "short": "VEL",
+      "default": 80,
+      "role": "preset",
+      "look": "dial",
+      "text": "number"
+    },
+    {
+      "p": 14,
+      "long": "Tune",
+      "short": "TUNE",
+      "default": 64,
+      "role": "preset",
+      "look": "centred",
+      "text": "bipolar"
+    },
+    {
+      "p": 15,
+      "long": "Gate Mode",
+      "short": "GATE",
+      "default": 0,
+      "role": "preset",
+      "look": "list",
+      "text": "enum",
+      "names": [
+        "ONE",
+        "GATED"
+      ]
+    },
+    {
+      "p": 16,
+      "long": "Level",
+      "short": "LEV",
+      "default": 100,
+      "role": "preset",
+      "look": "dial",
+      "text": "number"
+    }
+  ]
+}
