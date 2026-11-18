@@ -175,11 +175,15 @@ Each: what the page says, what the engine does, why. Listed for the owner.
    20 ms block watchdog (a restart). Faults and slow effects are caught; a hang is not, yet.
 9. **Also refused at load:** an API 1 / 2 table with a null `init` or `render` (it crashed before; now BAD), and
    function pointers outside the image's code part (an API 3 table only: an API 2 table is not checked further, so
-   nothing that loaded before is refused).
+   nothing that loaded before is refused; 0.5.0-pages: but `params_hi`, new, is checked in every table).
 10. **Effects get `b->p` without `RMP3_CAP_BLOCK_P`.** The page makes block-rate parameters a capability for
     modulation. A send-slot effect runs on core 2, where no control call can reach it, so its knobs come in the
     block (the send slot's P2..P5 as P1..P4) and `params` is not called there. The host does not offer `BLOCK_P` to
     machines yet (they still get `params`). This is the page's own design for modulation, used for one more reason.
+10a. **A machine's P17..P32 come through `params_hi`** (`rmp_plugin.reserved[5]`, an API 2 function, 0.5.0-pages:
+    docs/um-pages.md) and not through `b->p`: a machine's P1..P16 still arrive through `params()` (no `BLOCK_P` for
+    machines), so the second pages follow the same path; `RMP3_CAP_UM_P32` says the host calls it. The same plugin
+    code serves an API 2 host (the Teensy does not call it yet).
 11. **UFX assignments are kept per project** in `/.rytm/fxslots/<project>.txt` (the file the send FX already reads for
     the kits' tags): a line a UFX, `<tag 4 hex> <name>` as before, and for an assignment of `um=fx` the package
     after a tab: `<tag> <name>\t<id> <a.b.c>` (the slot map's id and version fields, the same exact-version-then-newest

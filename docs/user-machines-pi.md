@@ -187,7 +187,12 @@ core library, because `teensy/setup_core_lib.sh` leaves `core/user/` out.
   - A slot with the same package as another READY slot shares its image.
   - When the arenas fill up, everything is loaded again once (the arenas are reset with no voice playing); if it
     still does not fit, the slot is NO_ROOM.
-- **Console** (serial, or the web page's command box): `um`, `um=rescan`, `um=assign:<1..5>:<id>`, `um=clear:<1..5>`.
+- **Pages 3 and 4, stepped knobs** (0.5.0-pages, docs/um-pages.md): a package's RPG1 block is read at the scan; a
+  voice's P17..P32 are held per voice (`core/user/um_hi.h`), follow its machine (the manifest's defaults), reach the
+  plugin through `params_hi` (every state of the voice), are saved in the kit's INSERT file (UMX lines) and go to the
+  Rytm and back in 52 UM PAGES, with the machine's names and its stepped knobs.
+- **Console** (serial, or the web page's command box): `um`, `um=rescan`, `um=assign:<1..5>:<id>`, `um=clear:<1..5>`,
+  `umknob`, `umknob=<voice 1..8>:<P 17..32>:<0..127>`.
 - **The USER SLOTS page** (the box's own screen, `core/ui/page_slots.cpp`): any box with the remote UI and the user
   slots (the Rytm, the A4) can set U1..U5 there, with no firmware mod of its own for it. UP + YES opens the Sidecar's
   pages; the page is on the LEFT / RIGHT ring after SCOPE, SAMPLE and AUTO (on the A4 the ring's last: LEFT once on
@@ -343,6 +348,8 @@ mille. More in `plugins/mist/README.md`; `make -C plugins/mist check` runs its t
 
 - `teensy/libraries/RytmPlugins/extras/loader_a64_test.cpp`: verify, the target check, the two-part placement,
   every ABS64 and ADRP checked, refusals. The Teensy's loader, slots, manifest, meta and proto tests still pass.
+- `core/tests/test_um_pages.cpp`: P17..P32 and stepped knobs with the `api3_pages` / `v2_pages` test packages
+  (docs/um-pages.md "Tests").
 - `sim/tests/test_core_um.py`: real RMPA packages in the core lib.
   - The scan and the list, assign and clear with their answers, 1A with the fingerprint, the map file.
   - The sine at 440 Hz, the sound tag, enum names, MISSING after a delete, a stale list refused.

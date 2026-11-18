@@ -240,8 +240,9 @@ header and compares the layout.
   7-bit knob its own record describes - a pair knob has text `number` there and the default `default14 >> 7`. The C
   reader (`rmp_manifest.h`): `rmp_manifest_pages` (the block into `rmp_pages`: titles, `hi[]` as `rmp_desc_knob`s,
   `step[]` as `rmp_step_desc`s; entries that do not fit are skipped, a malformed block ignored), `rmp_pages_find`,
-  `rmp_pages_step`, `rmp_pages_enum`, `rmp_pages_pair_names` and `rmp_step_pair_text` (the "A / B" text). The host
-  runtime (storing P17..P32, calling `params_hi`, the remote pages) builds on it. Tests: `test_rmp_pack.py` Pages and
+  `rmp_pages_step`, `rmp_pages_enum`, `rmp_pages_pair_names` and `rmp_step_pair_text` (the "A / B" text). The Pi /
+  Mac host's runtime (the values per voice, `params_hi`, the kit file's UMX lines, the Rytm's 52 UM PAGES messages):
+  docs/um-pages.md. Tests: `test_rmp_pack.py` Pages and
   PagesC (the C reader on the packer's output), `extras/manifest_test.cpp` (chaining with RLB1, a package with only
   one of the blocks, a format-2 package, malformed blocks, every steps count's round trip), `tools/tests/test_rmp_api.c`.
 - The packer refuses: static constructors, host (undefined) symbols, other relocation types, other loadable sections,
@@ -892,7 +893,9 @@ A dual package (an API 2 table, `.api = 2u`, with an `rmp3_plugin` in `reserved[
 older host and as API 3 here; an API 3 only package (`.api = 3u`) is refused by an older host (effects must be). In
 the engine so far: the transport snapshot in every block, the slot arena (`plugram=` on the Pi), guarded control calls
 (a fault mutes the slot; `um=reload:<slot>`), stereo out on PRE / POST, and user effects in the send FX's UFX1..UFX4
-(`um=fx:<n>:<id>`). Test plugins: `plugins/api3_test` (the probe), `plugins/ufx_pingpong` (the example effect);
+(`um=fx:<n>:<id>`), a machine's P17..P32 through `params_hi` (`RMP3_CAP_UM_P32`, docs/um-pages.md) and an
+effect's P5..P16 in `b->p` (`RMP3_CAP_FX_P16`). Test plugins: `plugins/api3_test` (the probe; `pagesprobe.c` for
+P17..P32 and stepped knobs), `plugins/ufx_pingpong` (the example effect);
 user effects PHASER and BBD and their labels on the Rytm: section 12b.
 API 1 and 2 plugins are unchanged: `core/tests/test_api3_compat.cpp` compares their output with an API 2 host's.
 
