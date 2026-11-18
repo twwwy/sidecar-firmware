@@ -263,7 +263,7 @@ never sends it: the plugin draws page 1 only (the plain 29, which every 0026 sin
   P2 2 faults) on the SRC view (page 1, the fraction, P17..P32, the state), redraws on a 2A / a held step's / a P17
   change and none on the same values, pages 2..4 by the track byte, an `off` of another page, malformed bytes, a
   built-in machine's SMPL view stock, the API 2 machine with no voice (state NULL), a plugin without draw (stock), a
-  declined draw (`3A 0 0`, back), a fault (the slot muted, stock, no more calls), `RMP3_CAP_DRAW` in the host's caps.
+  declined draw (`3A 0 0`, back), a fault (the slot muted, stock, no more calls), `RMP3_CAP_DRAW` as the API 3 probe sees it.
 - `sim/tests/test_protocol_rui.py` `test_view_pages` (the bytes, every track and page both ways, refusals);
   `tools/tests/test_rmp_api.c` (`RMP_P_DRAW`, the constants, `rmp_draw_of`).
 

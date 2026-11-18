@@ -14,7 +14,7 @@
 //   - a plugin without draw (api3_test): nothing drawn, the stock page (no frame), as before;
 //   - fallback: the draw declining (0) gives the stock page back (3A 0 0), drawing again after; a fault mutes the slot
 //     (the guard) and the stock page comes back, the draw not called again;
-//   - RMP3_CAP_DRAW in the host's caps (um::begin's log line).
+//   - RMP3_CAP_DRAW in the host's caps (the API 3 probe sees it; the API 2 one has no caps).
 #include <sys/stat.h>
 #include <unistd.h>
 #include <cstdio>
@@ -171,13 +171,6 @@ int main() {
   CHECK(um::slot_view(0).state == RMP_SLOT_READY && um::slot_view(1).state == RMP_SLOT_READY &&
         um::slot_view(2).state == RMP_SLOT_READY);
   CHECK(hooks.user_draw && hooks.user_draw_key);
-  {
-    bool caps = false;   // RMP3_CAP_DRAW in the host's caps (um::begin's line)
-    for (auto& l : g_log) caps |= l.find("host caps:") != std::string::npos && l.find("machine P17..P32, draw") != std::string::npos;
-    if (!caps)
-      for (auto& l : g_log) printf("  log: %s\n", l.c_str());
-    CHECK(caps);
-  }
 
   // the Rytm's 33: BD (voice 0) on U1, SD (voice 2) on U3, BT (voice 1) on U2, LT (voice 3) on 6-OP FM
   sysex({0xF0, 0x7D, 0x52, 0x54, 0x33, 1, 0, 6, 0, 0x50 | 0, 0, 0x60 | 2, 0, 0, 0, 0, 0, 0x58 | 1, 0, kFm | 3, 0xF7});
@@ -193,7 +186,7 @@ int main() {
   CHECK(remote_stats().page == 4 && remote_stats().user_draws == 1 && remote_stats().user_drawn == 1);
   CHECK(remote_stats().src_frames == f0 + 1);
   CHECK(run(0) == 1 && px(127, 0));            // page 1
-  CHECK(!px(0, 1) && px(2, 1));                // not locked; a state
+  CHECK(!px(0, 1) && px(2, 1) && px(4, 1));    // not locked; a state; RMP3_CAP_DRAW in the host's caps
   CHECK(run(2) == 1);                          // track 0
   CHECK(run(8) == 10 && run(9) == 100 && run(10) == 5 && run(13) == 20 && run(16) == 30 && run(23) == 127);
   CHECK(run(40) == 64);                        // P1's fraction 64/128
@@ -252,7 +245,7 @@ int main() {
   src_vals(4, {7 << 7, 100 << 7});
   view(4, 1);
   tick(3);
-  CHECK(remote_stats().user_draws == d4 + 1 && run(0) == 1 && run(2) == 5 && !px(2, 1) && run(8) == 7 && run(8 + 16) == def(17));
+  CHECK(remote_stats().user_draws == d4 + 1 && run(0) == 1 && run(2) == 5 && !px(2, 1) && !px(4, 1) && run(8) == 7 && run(8 + 16) == def(17));
   view(4, 0);
   printf("test_um_draw: API 2 machine drawn, no voice yet (state NULL), defaults for P17..P32\n");
 

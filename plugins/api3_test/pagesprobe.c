@@ -10,8 +10,9 @@
 //                 0.375 an API 3 render without, 0.25 the API 2 render, 7 = P5's entry / 8, 8 = P1 / 128
 // Both also fill reserved[RMP_P_DRAW] (plugin-drawn screens, docs/um-pages.md; core/tests/test_um_draw.cpp): P2 1 declines
 // (returns 0), P2 2 faults; else it draws, row-major (rmp_api.h): row 0 `page` pixels from x 0 and x 127; row 1 x 0
-// when flags has RMP_DRAW_LOCKED, x 2 when state is not NULL; row 2 track + 1 pixels; row 8 + k (k 0..31) P(k+1) as
-// a bar of (int)p[k] pixels; row 40 P1's fraction x 128 pixels; rows 48..63 x lit when (x + 2 y) % 5 == 0.
+// when flags has RMP_DRAW_LOCKED, x 2 when state is not NULL, x 4 when the host's caps have RMP3_CAP_DRAW (API 3);
+// row 2 track + 1 pixels; row 8 + k (k 0..31) P(k+1) as a bar of (int)p[k] pixels; row 40 P1's fraction x 128 pixels;
+// rows 48..63 x lit when (x + 2 y) % 5 == 0.
 // MIT, Copyright 2026 trigcondition and contributors.
 #include "rmp/rmp_api3.h"
 
@@ -73,6 +74,7 @@ static int32_t f_draw(void *st, int32_t page, uint32_t flags, int32_t track, con
   lit(fb, 127, 0);
   if (flags & RMP_DRAW_LOCKED) lit(fb, 0, 1);
   if (st) lit(fb, 2, 1);
+  if (g_caps & RMP3_CAP_DRAW) lit(fb, 4, 1);
   bar(fb, 2, track + 1);
   for (int k = 0; k < RMP_PARAMS + RMP_PARAMS_HI; ++k) bar(fb, 8 + k, (int)p[k]);
   bar(fb, 40, (int)((p[0] - (float)(int)p[0]) * 128.0f + 0.5f));
