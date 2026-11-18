@@ -728,6 +728,183 @@ def decode_slots(payload):
                 answer=(payload[7], payload[8]) if len(payload) == 9 else None)
 
 
+# ---- 52 UM PAGES (0.5.0-pages, docs/um-pages.md; C: teensy/libraries/RytmPlugins/src/rmp_proto.h, core/user/um.cpp) ----
+# A user machine's P17..P32 and its stepped P1..P16 knobs. P17..P24 are the Rytm's SRC page 2 (encoders A..H), P25..P32
+# its SMPL page 2: values 0..127 the host holds per voice V1..V8 (no sound words, so no p-locks; saved with the kit on the
+# host: its INSERT file's UMX lines), started from the manifest's knobs_hi defaults whenever the voice's machine changes.
+# A stepped knob is one of P1..P16 (a sound word as before) whose 14-bit value v14 = value << 7 | fraction picks one of
+# `steps` entries: step_v14 / step_entry below (= rmp_api.h rmp_step_v14 / rmp_step_entry). All messages are
+#     F0 7D 52 54 52 <ver 1> <kind> ... F7
+# and a receiver drops another ver or kind (an older Rytm drops 52 entirely: one SRC / SMPL page, plain 7-bit knobs).
+#   kind 0 HEAD      host -> Rytm  <slot 1..5> <gen> <nhi 0..16> <pages> <last p> <nstep 0..16> <page3 title 13>
+#                                  <page4 title 13>                                                     40 bytes
+#        gen: the 1A generation it belongs to (sent right after every 1A part 0 the host sends, and on 52 ASK); pages:
+#        bit 0 SRC page 2 (a knob in P17..P24), bit 1 SMPL page 2 (P25..P32); last p: the highest P named (0 none);
+#        titles NUL-padded ("" = the Rytm's default). A slot without the block: nhi 0, pages 0, last 0, nstep 0.
+#   kind 1 HI KNOBS  host -> Rytm  <slot> <gen> <n 1..4> {<p 17..32> <look> <kind> <role 0> <min> <max> <default>
+#                                  <enum count> <long 12> <short 4>} x n          (1A's knob record)  <= 107 bytes
+#        the list names of a list knob P: 19 ASK what 1 (ENUM) arg P - 1 (16..31), answered by 1B with list = arg.
+#   kind 2 STEPS     host -> Rytm  <slot> <gen> <n 1..8> {<p 1..16> <kind 0 number | 1 pair> <steps hi> <steps lo>
+#                                  <def14 hi> <def14 lo> <pair names 0 | 2..36>} x n (14-bit: v >> 7, v & 7F) <= 67
+#   kind 3 PAIR NAMES host -> Rytm <slot> <gen> <p> <total 2..36> <first> <n 1..12> {<name 7>} x n         <= 98
+#        pair entry q reads names[q // total] + " / " + names[q % total] (steps = total * total)
+#   kind 4 VALUES    both ways     <voice 0..7> <slot 1..5> <first p 17..32> <n 1..16> <value 0..127> x n  <= 28
+#        host -> Rytm: the voice's P17..P(16 + n) (n = last p - 16) when they changed (a machine change, a kit load, the
+#        console), after a hello (35), a 52 ASK, and every 2 s; Rytm -> host: a turn (the host takes it while the voice's
+#        machine is slot's and P is one it has, marks the kit's file, and does not echo it).
+#   kind 5 ASK       Rytm -> host  <slot 0 all | 1..5>                                                    9 bytes
+#        answered by HEAD .. PAIR NAMES of the slot(s) and every voice's VALUES.
+UM_PAGES, UM_PAGES_VER = 0x52, 1
+PG_HEAD, PG_KNOBS, PG_STEPS, PG_PAIR, PG_VALUES, PG_ASK = range(6)
+STEP_NUMBER, STEP_PAIR = 0, 1
+STEP_V14_MAX, STEPS_MAX = 16256, 16256
+PG_KNOBS_PER_MSG, PG_STEPS_PER_MSG, PG_PAIR_PER_MSG, PG_NAME_CHARS = 4, 8, 12, 7
+
+
+def step_v14(steps, q):
+    """Entry q's 14-bit value (rmp_step_v14): (q * 16256 + (steps - 1) // 2) // (steps - 1)."""
+    if steps < 2:
+        return 0
+    steps = min(steps, STEPS_MAX)
+    q = min(max(q, 0), steps - 1)
+    return (q * STEP_V14_MAX + (steps - 1) // 2) // (steps - 1)
+
+
+def step_entry(steps, v14):
+    """The entry a 14-bit value means (rmp_step_entry): min((v14 * (steps - 1) + 8128) // 16256, steps - 1)."""
+    if steps < 2:
+        return 0
+    steps = min(steps, STEPS_MAX)
+    v14 = min(max(v14, 0), 16383)
+    return min((v14 * (steps - 1) + STEP_V14_MAX // 2) // STEP_V14_MAX, steps - 1)
+
+
+def step_detent(steps, v14, d):
+    """What a Rytm stepped knob writes for d detents (d > 0 up) from v14: the entry's neighbour's exact value, clamped."""
+    return step_v14(steps, min(max(step_entry(steps, v14) + d, 0), steps - 1))
+
+
+def pair_text(names, q):
+    """Entry q of a pair knob: names[q // n] + " / " + names[q % n] (q clamped to n * n - 1)."""
+    n = len(names)
+    q = min(max(q, 0), n * n - 1)
+    return f"{names[q // n]} / {names[q % n]}"
+
+
+def _pg(kind, body):
+    return bytes(HDR) + bytes([UM_PAGES, UM_PAGES_VER, kind]) + bytes(body) + b"\xf7"
+
+
+def pg_head(slot, gen, knobs=(), nstep=0, title3="", title4=""):
+    """52 HEAD: knobs the hi knobs (dicts with p; as pg_knobs takes them), nstep the stepped knobs' count."""
+    ps = [k["p"] for k in knobs]
+    pages = (1 if any(p <= 24 for p in ps) else 0) | (2 if any(p >= 25 for p in ps) else 0)
+    return _pg(PG_HEAD, [slot & 0x7F, gen & 0x7F, len(ps), pages, max(ps, default=0), nstep & 0x7F] +
+               text_bytes(title3, 13) + text_bytes(title4, 13))
+
+
+def pg_knobs(slot, gen, knobs):
+    """52 HI KNOBS: 1..4 knobs (dicts p 17..32, look, kind, min, max, default, enum_count, long, short; as 1A's)."""
+    knobs = list(knobs)
+    if not 1 <= len(knobs) <= PG_KNOBS_PER_MSG or any(not 17 <= k["p"] <= 32 for k in knobs):
+        raise ValueError("1..4 knobs of P17..P32")
+    body = [slot & 0x7F, gen & 0x7F, len(knobs)]
+    for k in knobs:
+        body += [x & 0x7F for x in (k["p"], _ix(LOOKS, k.get("look", 0)), _ix(KINDS, k.get("kind", 0)), 0,
+                                    k.get("min", 0), k.get("max", 127), k.get("default", 64), k.get("enum_count", 0))]
+        body += text_bytes(k.get("long", ""), 12) + text_bytes(k.get("short", ""), 4)
+    return _pg(PG_KNOBS, body)
+
+
+def pg_steps(slot, gen, steps):
+    """52 STEPS: 1..8 (p 1..16, kind STEP_NUMBER | STEP_PAIR, steps 2..16256, def14 0..16256, pair names 0 | 2..36)."""
+    steps = list(steps)
+    if not 1 <= len(steps) <= PG_STEPS_PER_MSG:
+        raise ValueError("1..8 stepped knobs")
+    body = [slot & 0x7F, gen & 0x7F, len(steps)]
+    for p, kind, n, d14, npair in steps:
+        if not 1 <= p <= 16 or not 2 <= n <= STEPS_MAX or not 0 <= d14 <= STEP_V14_MAX:
+            raise ValueError("P1..P16, steps 2..16256, def14 0..16256")
+        body += [p, kind & 0x7F, n >> 7, n & 0x7F, d14 >> 7, d14 & 0x7F, npair if kind == STEP_PAIR else 0]
+    return _pg(PG_STEPS, body)
+
+
+def pg_pair(slot, gen, p, names, first=0, n=PG_PAIR_PER_MSG):
+    """52 PAIR NAMES: names[first:first + n] (n <= 12) of stepped knob P p's names (2..36, 7 characters each)."""
+    count = min(n, PG_PAIR_PER_MSG, len(names) - first)
+    if not 2 <= len(names) <= 36 or not 0 <= first < len(names) or count < 1:
+        raise ValueError("2..36 names, first inside them")
+    body = [slot & 0x7F, gen & 0x7F, p & 0x7F, len(names), first, count]
+    for nm in names[first:first + count]:
+        body += text_bytes(nm, PG_NAME_CHARS)
+    return _pg(PG_PAIR, body)
+
+
+def pg_values(voice, slot, first_p, values):
+    """52 VALUES (both ways): voice 0..7's P first_p (17..32) .. on slot 1..5, values 0..127 (1..16, not past P32)."""
+    if not 1 <= len(values) <= 16 or not 17 <= first_p <= 33 - len(values) or not 0 <= voice <= 7 or not 1 <= slot <= 5:
+        raise ValueError("voice 0..7, slot 1..5, 1..16 values within P17..P32")
+    return _pg(PG_VALUES, [voice, slot, first_p, len(values)] + [v & 0x7F for v in values])
+
+
+def pg_ask(slot=0):
+    """52 ASK (Rytm -> host): slot 1..5's pages, or 0 all; and every voice's VALUES."""
+    return _pg(PG_ASK, [slot & 0x7F])
+
+
+def decode_pg(payload):
+    """52's payload (from the ver byte) -> dict kind=..., the fields; None if malformed (as the C parsers / the Rytm)."""
+    b = bytes(payload)
+    if len(b) < 3 or b[0] != UM_PAGES_VER:
+        return None
+    kind, x = b[1], b[2:]
+    if kind == PG_HEAD:
+        if len(x) != 32 or x[2] > 16 or x[3] > 3 or x[5] > 16 or not (x[4] == 0 or 17 <= x[4] <= 32):
+            return None
+        return dict(kind="head", slot=x[0], gen=x[1], nhi=x[2], pages=x[3], last=x[4], nstep=x[5],
+                    title3=_text(x[6:19]), title4=_text(x[19:32]))
+    if kind == PG_KNOBS:
+        if len(x) < 3 or not 1 <= x[2] <= 4 or len(x) != 3 + 24 * x[2]:
+            return None
+        ks = []
+        for i in range(x[2]):
+            e = x[3 + 24 * i:3 + 24 * (i + 1)]
+            if not 17 <= e[0] <= 32 or e[1] >= len(LOOKS) or e[2] >= len(KINDS):
+                return None
+            ks.append(dict(p=e[0], look=LOOKS[e[1]], kind=KINDS[e[2]], min=e[4], max=e[5], default=e[6], enum_count=e[7],
+                           long=_text(e[8:20]), short=_text(e[20:24])))
+        return dict(kind="knobs", slot=x[0], gen=x[1], knobs=ks)
+    if kind == PG_STEPS:
+        if len(x) < 3 or not 1 <= x[2] <= 8 or len(x) != 3 + 7 * x[2]:
+            return None
+        st = []
+        for i in range(x[2]):
+            e = x[3 + 7 * i:3 + 7 * (i + 1)]
+            n, d14 = e[2] << 7 | e[3], e[4] << 7 | e[5]
+            if not 1 <= e[0] <= 16 or e[1] > 1 or not 2 <= n <= STEPS_MAX or d14 > STEP_V14_MAX:
+                return None
+            if e[1] == STEP_PAIR and (not 2 <= e[6] <= 36 or n != e[6] * e[6]):
+                return None
+            st.append(dict(p=e[0], kind=e[1], steps=n, def14=d14, npair=e[6]))
+        return dict(kind="steps", slot=x[0], gen=x[1], steps=st)
+    if kind == PG_PAIR:
+        if len(x) < 6 or not 2 <= x[3] <= 36 or x[4] >= x[3] or not 1 <= x[5] <= 12 or x[4] + x[5] > x[3] or \
+                len(x) != 6 + PG_NAME_CHARS * x[5]:
+            return None
+        return dict(kind="pair", slot=x[0], gen=x[1], p=x[2], total=x[3], first=x[4],
+                    names=[_text(x[6 + 7 * i:13 + 7 * i]) for i in range(x[5])])
+    if kind == PG_VALUES:
+        if len(x) < 5 or x[0] > 7 or not 1 <= x[1] <= 5 or not 17 <= x[2] <= 32 or not 1 <= x[3] <= 33 - x[2] or \
+                len(x) != 4 + x[3] or any(v > 127 for v in x[4:]):
+            return None
+        return dict(kind="values", voice=x[0], slot=x[1], first=x[2], values=list(x[4:]))
+    if kind == PG_ASK:
+        if len(x) != 1 or x[0] > 5:
+            return None
+        return dict(kind="ask", slot=x[0])
+    return None
+
+
 # ---- the reports' sound tag (2026-10-10): the Rytm (rytm-mods 0021 ext_render) appends the owner track's
 # sound word 0 - the plugin fingerprint a U-sound was saved with, 0 untagged - as two 7-bit bytes ----
 def _p14(ps):
