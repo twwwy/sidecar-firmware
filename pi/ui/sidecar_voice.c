@@ -489,7 +489,8 @@ void sidecar_voice_set (const sidecar_voice_view_t *v)
 			lv_snprintf (nb, sizeof nb, "%u", v->val[k]);
 			th_meter_set (s_Knob[k], used ? v->val[k] : -1);
 			th_meter_label (s_Knob[k], used ? v->label[k] : "");
-			th_meter_value (s_Knob[k], used ? nb : v->valid ? "" : "---");	// UX review T7: the value; waiting: ---
+			th_meter_value (s_Knob[k], used ? (v->vtext[k][0] ? v->vtext[k] : nb) : v->valid ? "" : "---");	// UX review T7: the value
+														// (a stepped knob's text); waiting: ---
 		}
 	if (scope && v->mode == SVV_PLAIN) lv_obj_invalidate (s_Scope);
 	if (mode) lv_obj_invalidate (s_Mode);

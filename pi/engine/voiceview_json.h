@@ -44,7 +44,16 @@ inline size_t view (const sidecar_voice_view_t &v, char *pOut, size_t max)
 	w.s (",\"val\":"); arr (w, v.val, 8);
 	w.s (",\"label\":[");
 	for (int k = 0; k < 8; k++) { if (k) w.s (","); fs (w, v.label[k]); }
-	w.s ("],\"pattern\":"); i (w, v.pattern);
+	w.s ("]");
+	bool txt = false;						// 0.5.0-pages: stepped knobs' texts, only when there are any
+	for (int k = 0; k < 8; k++) txt = txt || v.vtext[k][0];
+	if (txt)
+	{
+		w.s (",\"vtext\":[");
+		for (int k = 0; k < 8; k++) { if (k) w.s (","); fs (w, v.vtext[k]); }
+		w.s ("]");
+	}
+	w.s (",\"pattern\":"); i (w, v.pattern);
 	int st = v.steps < 0 ? 0 : v.steps > SVV_STEPS ? SVV_STEPS : v.steps;
 	w.s (",\"locks\":"); arr (w, v.locks, st);
 	w.s (",\"trig\":"); arr (w, v.trig, st);

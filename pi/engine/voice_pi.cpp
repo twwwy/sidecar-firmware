@@ -8,6 +8,7 @@
 #include "sidecar_features.h"
 #include <string.h>
 
+#include "hooks.h"
 #include "lib/srclib.h"
 #include "machines.h"
 #include "msamp/msamp.h"
@@ -208,8 +209,16 @@ void Fill(sidecar_voice_view_t* o, const rytm_pattern_t* pat, int pattern, bool 
       }
     }
   }
+  // 0.5.0-pages: a user machine's stepped knobs (a pair's "B3 / B12") as their text, from P1..P8 as the voice plays them
+  char vtext[8][18] = {};
+  if (t >= 0 && core::hooks.user_value_text && !core::ui::remote_track_smpl(t)) {
+    int vi = core::ui::remote_track_voice(t);
+    for (int k = 0; vi >= 0 && k < 8; ++k)
+      if (!core::hooks.user_value_text(vi, k, vtext[k], sizeof vtext[k])) vtext[k][0] = 0;
+  }
   sidecar_voice_view_t v;
   memset(&v, 0, sizeof v);
+  memcpy(v.vtext, vtext, sizeof v.vtext);
   v.valid = t >= 0;
   v.track = t;
   v.machine = m;

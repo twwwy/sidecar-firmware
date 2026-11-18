@@ -568,7 +568,11 @@ static void test_voices_and_next ()
 	CHECK (has (buf, "\"val\":[0,10,20,30,40,50,60,70],\"label\":[\"LEV\",\"TUNE!\",\"\""));
 	CHECK (has (buf, "\"pattern\":3,\"locks\":[0,4],\"trig\":[1,0],\"mode\":\"fm\",\"fm\":{\"name\":\"\",\"alg\":4,\"fb\":7"));
 	CHECK (has (buf, "\"col\":[-2,0,0,0,0,0]") && has (buf, "\"fbSrc\":-1") && has (buf, "\"freq\":[\"1.00\",\"\""));
-	CHECK (has (buf, "\"gen\":99}"));
+	CHECK (has (buf, "\"gen\":99}") && !has (buf, "vtext"));
+	memcpy (v->vtext[3], "B10 / B10", 10);				// 0.5.0-pages: a pair knob's text
+	n = voicejson::view (*v, buf, sizeof buf);
+	CHECK (n > 0 && wsjson::valid_object (buf, n) && has (buf, "\"vtext\":[\"\",\"\",\"\",\"B10 / B10\",\"\",\"\",\"\",\"\"],\"pattern\":3"));
+	memset (v->vtext, 0, sizeof v->vtext);
 	v->mode = SVV_MULTI; v->ms_nz = 99; v->steps = 999;		// clamped
 	n = voicejson::view (*v, buf, sizeof buf);
 	CHECK (n > 0 && wsjson::valid_object (buf, n) && has (buf, "\"multi\":{\"inst\":\"\",\"ready\":false"));

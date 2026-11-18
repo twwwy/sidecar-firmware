@@ -35,6 +35,7 @@ typedef struct
 	char		name[16];		// "BD PLASTIC"
 	unsigned char	val[8];			// P1..P8, 0..127
 	char		label[8][5];		// "LEV", "TUN" .. ("" unused)
+	char		vtext[8][18];		// a stepped knob's value as text ("B3 / B12", 0.5.0-pages: core hooks.user_value_text); "" the number
 	int		ncols;
 	signed char	smin[SVV_COLS], smax[SVV_COLS];	// the scope: the stem's min / max per column, -127..127
 	int		level;			// the stem's peak 0..127 (dB-ish)
