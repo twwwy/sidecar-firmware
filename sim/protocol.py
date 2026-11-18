@@ -1245,6 +1245,12 @@ RUI_FIRST, RUI_LAST = 0x30, 0x3F
 # while 3C keeps coming) or with nothing (no page: stock); 3A x 0 with the page closed gives stock back. The view only
 # draws: no 37, no 3F, no 34; the TRK + YES page comes first (no 29 0 for it; after it the host's next commit).
 RUI_SRC_VIEW, RUI_SRC_VALS = 0x29, 0x2A
+# Plugin-drawn screens (docs/um-pages.md): the view's page in the track byte, 29 <track | (page - 1) << 4> <on>: page 1 the
+# SRC page (the plain byte, as above), 2 the SMPL page, 3 SRC page 2, 4 SMPL page 2 (0029's P17..P32 pages); bit 6
+# clear. One view at a time: an `on` replaces the view before it, an `off` ends the view it names (track and page). 2A
+# as for the SRC view while any view is on. An older host drops a track byte over 11 (it never draws pages 2..4); the
+# host draws pages 2..4 only for a user machine whose plugin draws (rmp_api.h RMP_P_DRAW), else nothing (stock).
+RUI_PAGE_SRC, RUI_PAGE_SMPL, RUI_PAGE_SRC2, RUI_PAGE_SMPL2 = 1, 2, 3, 4
 # 1027d diagnostic, Rytm -> host 2B <state> <views> <vt0..vt4> <age>: state bits 0 view on, 1 covered, 2 committed,
 # 3 host idle >= 1 s, 4 TRK + YES open, 5 splash, 6 the host's frame shown; the controller list's length; the top
 # view's vtable (vt0 << 28 | vt1 << 21 | vt2 << 14 | vt3 << 7 | vt4: 40234cfc SamplerLedView = plain SRC); age: 50 ms ticks since it changed (127 max)
@@ -1376,8 +1382,8 @@ def decode_rui(cmd, payload):
         return dict(enc=b[0], delta=b[1] - 64, func=b[2])
     if cmd == RUI_HELLO and len(b) >= 3:   # 0.5.0 FILL: a 4th byte caps2 (bit 0: UP + LEFT / RIGHT as 49 1 1 15 / 16)
         return dict(up=b[0] << 7 | b[1], caps=b[2], caps2=b[3] if len(b) > 3 else 0)
-    if cmd == RUI_SRC_VIEW and len(b) == 2 and b[0] < 12 and b[1] <= 1:
-        return dict(track=b[0], on=b[1])
+    if cmd == RUI_SRC_VIEW and len(b) == 2 and not b[0] & 0x40 and (b[0] & 0x0F) < 12 and b[1] <= 1:
+        return dict(track=b[0] & 0x0F, on=b[1], page=(b[0] >> 4) + 1)
     if cmd == RUI_SRC_DIAG and len(b) == 8:
         return dict(state=b[0], views=b[1], top=b[2] << 28 | b[3] << 21 | b[4] << 14 | b[5] << 7 | b[6], age=b[7])
     if cmd == RUI_SRC_VALS and len(b) >= 5 and b[0] < 12 and b[2] >= 1 and b[1] + b[2] <= 16 and len(b) == 3 + 2 * b[2]:
@@ -1387,9 +1393,12 @@ def decode_rui(cmd, payload):
     return None
 
 
-def rui_src_view(track, on) -> bytes:
-    """29 (Rytm -> host, 1027): the SRC page of `track` shown / left."""
-    return _msg(RUI_SRC_VIEW, [track & 0x7F, 1 if on else 0])
+def rui_src_view(track, on, page=RUI_PAGE_SRC) -> bytes:
+    """29 (Rytm -> host, 1027): the SRC page of `track` shown / left; page 2..4 (plugin-drawn screens) the SMPL page,
+    SRC page 2, SMPL page 2: the track byte | (page - 1) << 4."""
+    if not 0 <= track < 12 or not RUI_PAGE_SRC <= page <= RUI_PAGE_SMPL2:
+        raise ValueError("track 0..11, page 1..4")
+    return _msg(RUI_SRC_VIEW, [track | (page - 1) << 4, 1 if on else 0])
 
 
 def rui_src_vals(track, first, values) -> bytes:

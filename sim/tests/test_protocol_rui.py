@@ -45,7 +45,7 @@ class RemoteUi(unittest.TestCase):
         self.assertIsNone(P.decode_rui(P.RUI_ENC, bytes([2, 3, 61, 0])))
 
     def test_hello_splash(self):   # 1023
-        self.assertEqual(P.decode_rui(P.RUI_HELLO, bytes([1, 5, 0, 1])), dict(up=640, caps=1))
+        self.assertEqual(P.decode_rui(P.RUI_HELLO, bytes([1, 5, 0, 1])), dict(up=640, caps=1, caps2=0))
         self.assertIsNone(P.decode_rui(P.RUI_HELLO, bytes([1, 5, 0])))
         self.assertEqual(P.rui_splash(64), bytes([0xF0, 0x7D, 0x52, 0x54, 0x36, 1, 64, 0xF7]))
         self.assertEqual(P.rui_splash(500)[6], 127)
@@ -75,7 +75,7 @@ class RemoteUi(unittest.TestCase):
     def test_src_view_1027(self):
         m = P.rui_src_view(1, 1)   # SD's stock SRC page shown
         self.assertEqual(m, bytes([0xF0, 0x7D, 0x52, 0x54, 0x29, 1, 1, 1, 0xF7]))
-        self.assertEqual(P.decode_rui(*P.parse(m)), dict(track=1, on=1))
+        self.assertEqual(P.decode_rui(*P.parse(m)), dict(track=1, on=1, page=1))
         v = P.rui_src_vals(0, 0, [3, 100.5, 20])   # BD's PAT CUT RES
         cmd, body = P.parse(v)
         self.assertEqual((cmd, len(v)), (P.RUI_SRC_VALS, 10 + 2 * 3))
@@ -83,6 +83,22 @@ class RemoteUi(unittest.TestCase):
         self.assertIsNone(P.decode_rui(P.RUI_SRC_VALS, bytes([1, 0, 15, 2, 1, 0, 1, 0])))   # past P16
         self.assertIsNone(P.decode_rui(P.RUI_SRC_VIEW, bytes([1, 12, 1])))                 # past track 11
         self.assertFalse({P.RUI_SRC_VIEW, P.RUI_SRC_VALS} & {P.FXIN, P.FXIN_STATE, P.SLOT_PRINTS, P.SENDFX})
+
+    def test_view_pages(self):
+        # plugin-drawn screens (docs/um-pages.md): 29 <track | (page - 1) << 4> <on>
+        self.assertEqual(P.rui_src_view(1, 1, P.RUI_PAGE_SMPL), bytes([0xF0, 0x7D, 0x52, 0x54, 0x29, 1, 0x11, 1, 0xF7]))
+        self.assertEqual(P.rui_src_view(11, 0, P.RUI_PAGE_SRC2)[6:8], bytes([0x2B, 0]))
+        self.assertEqual(P.rui_src_view(0, 1, P.RUI_PAGE_SMPL2)[6:8], bytes([0x30, 1]))
+        self.assertEqual(P.rui_src_view(5, 1), P.rui_src_view(5, 1, P.RUI_PAGE_SRC))   # page 1: the 1027 bytes
+        for t in range(12):
+            for pg in range(1, 5):
+                for on in (0, 1):
+                    self.assertEqual(P.decode_rui(*P.parse(P.rui_src_view(t, on, pg))), dict(track=t, on=on, page=pg))
+        for bad in ([0x40, 1], [0x1C, 1], [0x3F, 0], [0x10, 2], [0x10]):   # bit 6, track 12, 15, on 2, short
+            self.assertIsNone(P.decode_rui(P.RUI_SRC_VIEW, bytes([1] + bad)))
+        for args in ((12, 1, 1), (0, 1, 0), (0, 1, 5)):
+            with self.assertRaises(ValueError):
+                P.rui_src_view(*args)
 
     def test_pixel_layout(self):
         fb = bytearray(1024)
