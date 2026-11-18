@@ -1,11 +1,12 @@
-// core/user/um_hi.h - a user machine's P17..P32 (0.5.0-pages, docs/um-pages.md): SRC page 2 (P17..P24) and SMPL page 2
+// core/um_hi.h - a user machine's P17..P32 (0.5.0-pages, docs/um-pages.md): SRC page 2 (P17..P24) and SMPL page 2
 // (P25..P32), values 0..127 the Sidecar holds per voice V1..V8 (never in the Rytm's kit: its sound words are P1..P16,
 // so they cannot be p-locked), turned on the Rytm (52 UM PAGES VALUES, rmp_proto.h), handed to the plugin by params_hi
 // (sdk/rmp/rmp_api.h RMP_P_PARAMS_HI) and saved in the kit's INSERT file (UMX lines, core/fx/insert_card.cpp).
 // slot / tag: the user slot (0..4) and its plugin's fingerprint (rmp_plugin_fp, the sound tag) the values belong to; a
 // voice whose machine is another starts from that machine's manifest defaults (um.cpp hi_follow). 0xFF: none yet (a kit
 // load without UMX lines for the voice). Control core only. Header only: insert.cpp and insert_card.cpp also link
-// without um.cpp (as fx::xknobs_load in fx/send_fx.h).
+// without um.cpp (as fx::xknobs_load in fx/send_fx.h), and outside core/user/: the Teensy's core library has inserts
+// but no core/user (teensy/setup_core_lib.sh).
 #pragma once
 #include <stdint.h>
 

@@ -25,7 +25,7 @@ namespace cardq = core::cardq;
 #include "rmp_resolve.h"
 #include "rmp_slots.h"
 #include "ui/remote.h"
-#include "user/um_hi.h"
+#include "um_hi.h"
 #include "voices.h"
 
 // The board's heap for the package buffer and the voices' state (weak: the C++ heap; the Pi's platform has its own).
@@ -1649,7 +1649,7 @@ bool on_render2(int vi, float* l, float* r) {
   return true;
 }
 
-// ---- 0.5.0-pages: a voice's P17..P32 (user/um_hi.h holds them; docs/um-pages.md)
+// ---- 0.5.0-pages: a voice's P17..P32 (um_hi.h holds them; docs/um-pages.md)
 int16_t g_hi_sent[core::kVoices][umhi::kHi];   // what the Rytm was last told (52 VALUES), -1 unknown
 int8_t g_hi_sent_slot[core::kVoices];
 bool g_pg_up = false;                // the Rytm listens (its 52, a hello, a 19 ASK META): values go out from then on

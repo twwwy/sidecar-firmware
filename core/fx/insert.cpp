@@ -10,7 +10,7 @@
 #include "fx/send_fx.h"
 #include "mod/target.h"
 #include "platform.h"
-#include "user/um_hi.h"
+#include "um_hi.h"
 
 namespace core {
 namespace ins {
@@ -88,7 +88,7 @@ struct LockInit {   // no step locks at boot (a 0 would be a lock to 0)
 
 void changed() { g_dirty = true, g_dirty_ms = now_ms(); }
 struct OutHook {   // OUT's settings live in the INSERT file (out.h); so do the send FX's P5..P16 (sendfx-pages, XFX lines)
-  // and the user machines' P17..P32 (0.5.0-pages, UMX lines: user/um_hi.h)
+  // and the user machines' P17..P32 (0.5.0-pages, UMX lines: um_hi.h)
   OutHook() { out::on_change = changed, fx::xknobs_changed = changed, umhi::changed = changed; }
 } g_out_hook;
 

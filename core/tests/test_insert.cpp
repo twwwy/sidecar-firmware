@@ -25,7 +25,7 @@
 #include "store/store.h"
 #include "ui/extra.h"
 #include "ui/remote.h"
-#include "user/um_hi.h"
+#include "um_hi.h"
 #include "voices.h"
 
 using namespace core;

@@ -57,7 +57,7 @@ nstep x rmp_step (8 B: p, kind 0 number / 1 pair, u16 steps, u16 def14, name_fir
 u16 length, "RPG1"`. The package format does not change (3, or 4 / 5 for their own reasons). Details and refusals:
 docs/plugins.md section 3 "Pages 3 and 4, stepped knobs". The C reader: `rmp_manifest_pages` (rmp_manifest.h).
 
-## The Sidecar (core/user/um.cpp, core/user/um_hi.h)
+## The Sidecar (core/user/um.cpp, core/um_hi.h)
 
 - **Scan**: each package's RPG1 block (`Pkg::pg`) and its name table (`pgnames`, on the Pi) are read with the manifest.
 - **Values** (`core::umhi::track[vi]`: `v[16]`, `slot`, `tag` = the slot plugin's fingerprint, `n` = the highest

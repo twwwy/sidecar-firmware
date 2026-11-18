@@ -14,7 +14,7 @@
 #include "fx/send_fx.h"
 #include "platform.h"
 #include "pool/pool.h"
-#include "user/um_hi.h"
+#include "um_hi.h"
 #if CORE_MSAMP
 #include "bundle/rename.h"
 #include "store/store.h"
@@ -121,7 +121,7 @@ bool from_line(const char* b) {
     return true;
   }
   // 0.5.0-pages: UMX <V1..V8> <first P 17..32> <slot 1..5> <tag 4 hex> <value> ... (at most 4 a line), a user machine's
-  // P17..P32 held for the Rytm's SRC / SMPL page 2 (user/um_hi.h). An older build does not read the line: it keeps the
+  // P17..P32 held for the Rytm's SRC / SMPL page 2 (um_hi.h). An older build does not read the line: it keeps the
   // file as it is (never written over), as any line it does not read.
   if (n >= 6 && same_ci(w[0], "UMX")) {
     int c = chain_from_name(w[1]), first = num(w[2]), s = num(w[3]) - 1, tag = 0, v[4];

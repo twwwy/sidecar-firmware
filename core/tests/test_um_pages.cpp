@@ -1,5 +1,5 @@
 // core/tests/test_um_pages.cpp - a user machine's P17..P32 and stepped knobs (0.5.0-pages, docs/um-pages.md;
-// core/user/um_hi.h, core/user/um.cpp, rmp_proto.h 52 UM PAGES) with real RMPA packages run in place on this arm64 Mac:
+// core/um_hi.h, core/user/um.cpp, rmp_proto.h 52 UM PAGES) with real RMPA packages run in place on this arm64 Mac:
 // plugins/api3_test's pagesprobe (pages.json: P1..P16, knobs_hi P17..P32 but P31, P4 a 361-entry pair knob, P5 a
 // stepped number of 5) as a dual package (api3_pages, its API 3 render) and a plain API 2 one (v2_pages), built with
 // `make -C plugins/api3_test V=pages a64` / `V=pages2` and kept in tests/api3_pkgs. Checked:
@@ -32,7 +32,7 @@
 #include "rmp_slots.h"
 #include "um_host.h"
 #include "user/um.h"
-#include "user/um_hi.h"
+#include "um_hi.h"
 #include "voices.h"
 
 using namespace core;

@@ -188,7 +188,7 @@ core library, because `teensy/setup_core_lib.sh` leaves `core/user/` out.
   - When the arenas fill up, everything is loaded again once (the arenas are reset with no voice playing); if it
     still does not fit, the slot is NO_ROOM.
 - **Pages 3 and 4, stepped knobs** (0.5.0-pages, docs/um-pages.md): a package's RPG1 block is read at the scan; a
-  voice's P17..P32 are held per voice (`core/user/um_hi.h`), follow its machine (the manifest's defaults), reach the
+  voice's P17..P32 are held per voice (`core/um_hi.h`), follow its machine (the manifest's defaults), reach the
   plugin through `params_hi` (every state of the voice), are saved in the kit's INSERT file (UMX lines) and go to the
   Rytm and back in 52 UM PAGES, with the machine's names and its stepped knobs.
 - **Console** (serial, or the web page's command box): `um`, `um=rescan`, `um=assign:<1..5>:<id>`, `um=clear:<1..5>`,
