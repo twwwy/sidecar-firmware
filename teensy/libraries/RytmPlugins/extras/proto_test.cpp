@@ -1,6 +1,7 @@
 // extras/proto_test.cpp - the user-slot messages 19..1E (sim/protocol.py) on the Mac.
 // build: c++ -std=c++17 -O1 -Wall -I../src proto_test.cpp ../src/rmp_proto.cpp ../src/rmp_manifest.cpp ../src/rmp_loader.cpp -o /tmp/proto_test && /tmp/proto_test
-// -DPROTO_DUMP: print the fixed messages below as hex lines instead (sim/tests/test_protocol_us.py compares Python's)
+// -DPROTO_DUMP: print the fixed messages below as hex lines instead (sim/tests/test_protocol_us.py compares Python's);
+// -DPROTO_DUMP_PAGES: the 52 UM PAGES messages of pages() (0.5.0-pages; sim/tests/test_protocol_um_pages.py)
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -25,11 +26,76 @@ static void desc(rmp_desc *d) {
   knob(d, 5, 0, 7, 0, 0, 127, 0, 0, "Sample", "SMP");
   knob(d, 9, 1, 1, 0, 0, 127, 64, 0, "Tune\x01", "TUN");
 }
-#ifdef PROTO_DUMP
+// 0.5.0-pages: a machine's P17..P32 and stepped knobs (rmp_manifest.h rmp_pages), as rmp_manifest_pages reads them
+static void hi(rmp_pages *pg, int p, int look, int kind, int lo, int hi_, int def, int first, int ne, const char *l, const char *s) {
+  rmp_desc_knob &k = pg->hi[pg->nhi++];
+  memset(&k, 0, sizeof k);
+  k.p = (uint8_t)p; k.look = (uint8_t)look; k.kind = (uint8_t)kind; k.min = (uint8_t)lo; k.max = (uint8_t)hi_; k.def = (uint8_t)def;
+  k.enum_first = (uint8_t)first; k.enum_count = (uint8_t)ne;
+  strncpy(k.long_name, l, 12); strncpy(k.short_name, s, 4);
+}
+static void pages(rmp_pages *pg, char (*names)[8]) {
+  memset(pg, 0, sizeof *pg);
+  pg->present = 1;
+  strcpy(pg->p3_title, "OPERATORS"); strcpy(pg->p4_title, "ENVELOPES");
+  hi(pg, 17, RMP_LOOK_DIAL, RMP_TEXT_NUMBER, 1, 20, 3, 0, 0, "Ratio", "RAT");
+  hi(pg, 25, RMP_LOOK_LIST, RMP_TEXT_ENUM, 0, 127, 0, 0, 3, "Wave", "WAV");
+  pg->step[pg->nstep++] = rmp_step_desc{1, RMP_STEP_PAIR, 361, 8128, 3, 19};
+  pg->step[pg->nstep++] = rmp_step_desc{2, RMP_STEP_NUMBER, 100, 1313, 0, 0};
+  for (int i = 0; i < 19; ++i) snprintf(names[i], 8, "B%d", i + 1);
+}
+#if defined(PROTO_DUMP) || defined(PROTO_DUMP_PAGES)
 static void hex(const uint8_t *m, int n) { for (int i = 0; i < n; ++i) printf("%02x", m[i]); printf("\n"); }
 #endif
 
 int main() {
+  {   // 52 UM PAGES (0.5.0-pages)
+    rmp_pages pg;
+    char pn[RMP_ENUM_MAX][8];
+    pages(&pg, pn);
+    uint8_t b[RMP_MSG_MAX];
+    uint8_t v[16];
+    for (int i = 0; i < 16; ++i) v[i] = (uint8_t)(100 + i);
+#ifdef PROTO_DUMP_PAGES
+    int n;
+    n = rmp_build_pg_head(b, 2, 9, &pg); hex(b, n);
+    n = rmp_build_pg_knobs(b, 2, 9, &pg, 0); hex(b, n);
+    n = rmp_build_pg_steps(b, 2, 9, &pg, 0); hex(b, n);
+    n = rmp_build_pg_pair(b, 2, 9, 1, pn, 19, 0, 12); hex(b, n);
+    n = rmp_build_pg_pair(b, 2, 9, 1, pn, 19, 12, 12); hex(b, n);
+    n = rmp_build_pg_values(b, 3, 2, 17, 16, v); hex(b, n);
+    n = rmp_build_pg_head(b, 4, 1, nullptr); hex(b, n);
+    return 0;
+#else
+    CHECK(rmp_build_pg_head(b, 2, 9, &pg) == 40 && b[4] == 0x52 && b[5] == 1 && b[6] == RMP_PG_HEAD);
+    CHECK(b[7] == 2 && b[8] == 9 && b[9] == 2 && b[10] == 3 && b[11] == 25 && b[12] == 2 && !memcmp(b + 13, "OPERATORS\0", 10));
+    CHECK(rmp_build_pg_knobs(b, 2, 9, &pg, 0) == 7 + 3 + 2 * 24 + 1 && b[9] == 2 && b[10] == 17 && b[34] == 25 && b[41] == 3);
+    CHECK(rmp_build_pg_knobs(b, 2, 9, &pg, 1) == 0 && rmp_build_pg_steps(b, 2, 9, &pg, 1) == 0);
+    CHECK(rmp_build_pg_steps(b, 2, 9, &pg, 0) == 7 + 3 + 2 * 7 + 1 && b[10] == 1 && b[11] == 1 && (b[12] << 7 | b[13]) == 361 &&
+          (b[14] << 7 | b[15]) == 8128 && b[16] == 19 && b[17] == 2 && b[23] == 0);
+    CHECK(rmp_build_pg_pair(b, 2, 9, 1, pn, 19, 12, 12) == 7 + 6 + 7 * 7 + 1 && b[12] == 7 && !memcmp(b + 13, "B13\0", 4));
+    CHECK(rmp_build_pg_pair(b, 2, 9, 1, pn, 19, 19, 1) == 0 && rmp_build_pg_pair(b, 2, 9, 1, pn, 1, 0, 1) == 0);
+    CHECK(rmp_build_pg_values(b, 3, 2, 17, 16, v) == 28 && rmp_build_pg_values(b, 3, 2, 18, 16, v) == 0 &&
+          rmp_build_pg_values(b, 3, 2, 16, 1, v) == 0 && rmp_build_pg_values(b, 3, 2, 17, 0, v) == 0);
+    int n = rmp_build_pg_values(b, 3, 2, 30, 3, v);
+    rmp_pg_values x;
+    CHECK(rmp_parse_pg_values(b, n, &x) && x.voice == 3 && x.slot == 2 && x.first == 30 && x.n == 3 && x.v[2] == 102);
+    b[9] = 31;   // past P32
+    CHECK(!rmp_parse_pg_values(b, n, &x));
+    b[9] = 30, b[7] = 8;   // voice 8
+    CHECK(!rmp_parse_pg_values(b, n, &x));
+    b[7] = 3, b[8] = 6;   // slot 6
+    CHECK(!rmp_parse_pg_values(b, n, &x));
+    b[8] = 2, b[5] = 2;   // another version
+    CHECK(!rmp_parse_pg_values(b, n, &x));
+    b[5] = 1, b[11] = 0x80;   // a byte with bit 7
+    CHECK(!rmp_parse_pg_values(b, n, &x) && !rmp_parse_pg_values(b, n - 1, &x));
+    const uint8_t ask[] = {0xF0, 0x7D, 0x52, 0x54, 0x52, 0x01, 0x05, 0x03, 0xF7}, bad[] = {0xF0, 0x7D, 0x52, 0x54, 0x52, 0x01, 0x05, 0x06, 0xF7};
+    int sl = -1;
+    CHECK(rmp_parse_pg_ask(ask, 9, &sl) && sl == 3 && !rmp_parse_pg_ask(bad, 9, &sl) && !rmp_parse_pg_ask(ask, 8, &sl));
+    CHECK(rmp_build_pg_head(b, 4, 1, nullptr) == 40 && b[9] == 0 && b[10] == 0 && b[11] == 0 && b[12] == 0 && b[13] == 0);
+#endif
+  }
   rmp_desc d; desc(&d);
   uint8_t m[RMP_MSG_MAX];
   char names[8][14];

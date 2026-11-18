@@ -167,3 +167,99 @@ RMP_COLD int rmp_build_slots(uint8_t *out, const uint8_t gen[5], int installed_g
   out[i++] = 0xF7;
   return i;
 }
+
+// ---- 52 UM PAGES (rmp_proto.h)
+RMP_COLD static int pg_head(uint8_t *o, int kind) {
+  int i = head(o, RMP_CMD_PAGES);
+  o[5] = RMP_PAGES_VER;
+  o[i++] = (uint8_t)kind;
+  return i;
+}
+RMP_COLD int rmp_build_pg_head(uint8_t *out, int slot, int gen, const rmp_pages *pg) {
+  bool on = pg && pg->present;
+  int i = pg_head(out, RMP_PG_HEAD), pages = 0, last = 0;
+  for (int k = 0; on && k < pg->nhi; ++k) {
+    pages |= pg->hi[k].p <= 24 ? 1 : 2;
+    if (pg->hi[k].p > last) last = pg->hi[k].p;
+  }
+  out[i++] = (uint8_t)(slot & 0x7F); out[i++] = (uint8_t)(gen & 0x7F);
+  out[i++] = on ? pg->nhi : 0; out[i++] = (uint8_t)pages; out[i++] = (uint8_t)last; out[i++] = on ? pg->nstep : 0;
+  text(out + i, on ? pg->p3_title : "", 13); i += 13;
+  text(out + i, on ? pg->p4_title : "", 13); i += 13;
+  out[i++] = 0xF7;
+  return i;
+}
+RMP_COLD int rmp_build_pg_knobs(uint8_t *out, int slot, int gen, const rmp_pages *pg, int part) {
+  int first = part * RMP_PG_KNOBS_PER_MSG;
+  if (!pg || !pg->present || part < 0 || first >= pg->nhi) return 0;
+  int n = pg->nhi - first < RMP_PG_KNOBS_PER_MSG ? pg->nhi - first : RMP_PG_KNOBS_PER_MSG;
+  int i = pg_head(out, RMP_PG_KNOBS);
+  out[i++] = (uint8_t)(slot & 0x7F); out[i++] = (uint8_t)(gen & 0x7F); out[i++] = (uint8_t)n;
+  for (int k = first; k < first + n; ++k) {
+    const rmp_desc_knob &q = pg->hi[k];
+    out[i++] = q.p & 0x7F; out[i++] = q.look & 0x7F; out[i++] = q.kind & 0x7F; out[i++] = q.role & 0x7F;
+    out[i++] = q.min & 0x7F; out[i++] = q.max & 0x7F; out[i++] = q.def & 0x7F; out[i++] = q.enum_count & 0x7F;
+    text(out + i, q.long_name, 12); i += 12;
+    text(out + i, q.short_name, 4); i += 4;
+  }
+  out[i++] = 0xF7;
+  return i;
+}
+RMP_COLD int rmp_build_pg_steps(uint8_t *out, int slot, int gen, const rmp_pages *pg, int part) {
+  int first = part * RMP_PG_STEPS_PER_MSG;
+  if (!pg || !pg->present || part < 0 || first >= pg->nstep) return 0;
+  int n = pg->nstep - first < RMP_PG_STEPS_PER_MSG ? pg->nstep - first : RMP_PG_STEPS_PER_MSG;
+  int i = pg_head(out, RMP_PG_STEPS);
+  out[i++] = (uint8_t)(slot & 0x7F); out[i++] = (uint8_t)(gen & 0x7F); out[i++] = (uint8_t)n;
+  for (int k = first; k < first + n; ++k) {
+    const rmp_step_desc &s = pg->step[k];
+    out[i++] = s.p & 0x7F; out[i++] = s.kind & 0x7F;
+    out[i++] = (uint8_t)(s.steps >> 7 & 0x7F); out[i++] = (uint8_t)(s.steps & 0x7F);
+    out[i++] = (uint8_t)(s.def14 >> 7 & 0x7F); out[i++] = (uint8_t)(s.def14 & 0x7F);
+    out[i++] = s.kind == RMP_STEP_PAIR ? (uint8_t)(s.name_count & 0x7F) : 0;
+  }
+  out[i++] = 0xF7;
+  return i;
+}
+RMP_COLD int rmp_build_pg_pair(uint8_t *out, int slot, int gen, int p, const char (*names)[8], int total, int first,
+                               int count) {
+  if (!names || total < 2 || total > RMP_ENUM_MAX || first < 0 || first >= total || count < 1) return 0;
+  if (count > RMP_PG_PAIR_PER_MSG) count = RMP_PG_PAIR_PER_MSG;
+  if (count > total - first) count = total - first;
+  int i = pg_head(out, RMP_PG_PAIR);
+  out[i++] = (uint8_t)(slot & 0x7F); out[i++] = (uint8_t)(gen & 0x7F); out[i++] = (uint8_t)(p & 0x7F);
+  out[i++] = (uint8_t)total; out[i++] = (uint8_t)first; out[i++] = (uint8_t)count;
+  for (int k = first; k < first + count; ++k) { text(out + i, names[k], RMP_PG_NAME_CHARS); i += RMP_PG_NAME_CHARS; }
+  out[i++] = 0xF7;
+  return i;
+}
+RMP_COLD int rmp_build_pg_values(uint8_t *out, int voice, int slot, int first, int n, const uint8_t *v) {
+  if (first < RMP_PAGES_P_FIRST || n < 1 || first + n - 1 > RMP_PAGES_P_LAST) return 0;
+  int i = pg_head(out, RMP_PG_VALUES);
+  out[i++] = (uint8_t)(voice & 7); out[i++] = (uint8_t)(slot & 0x7F); out[i++] = (uint8_t)first; out[i++] = (uint8_t)n;
+  for (int k = 0; k < n; ++k) out[i++] = v[k] & 0x7F;
+  out[i++] = 0xF7;
+  return i;
+}
+RMP_COLD static bool pg_ours(const uint8_t *m, int n, int kind) {
+  return n >= 8 && m[0] == 0xF0 && m[1] == 0x7D && m[2] == 0x52 && m[3] == 0x54 && m[4] == RMP_CMD_PAGES &&
+         m[5] == RMP_PAGES_VER && m[6] == kind && m[n - 1] == 0xF7;
+}
+RMP_COLD bool rmp_parse_pg_values(const uint8_t *m, int n, rmp_pg_values *x) {
+  if (!pg_ours(m, n, RMP_PG_VALUES) || n < 12) return false;
+  int c = m[10];
+  if (m[7] > 7 || m[8] < 1 || m[8] > 5 || m[9] < RMP_PAGES_P_FIRST || c < 1 || m[9] + c - 1 > RMP_PAGES_P_LAST ||
+      n != 12 + c)
+    return false;
+  x->voice = m[7], x->slot = m[8], x->first = m[9], x->n = (uint8_t)c;
+  for (int k = 0; k < c; ++k) {
+    if (m[11 + k] > 127) return false;
+    x->v[k] = m[11 + k];
+  }
+  return true;
+}
+RMP_COLD bool rmp_parse_pg_ask(const uint8_t *m, int n, int *slot) {
+  if (!pg_ours(m, n, RMP_PG_ASK) || n != 9 || m[7] > 5) return false;
+  *slot = m[7];
+  return true;
+}

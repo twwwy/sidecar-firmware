@@ -10,6 +10,7 @@
 #include "fx/send_fx.h"
 #include "mod/target.h"
 #include "platform.h"
+#include "user/um_hi.h"
 
 namespace core {
 namespace ins {
@@ -87,7 +88,8 @@ struct LockInit {   // no step locks at boot (a 0 would be a lock to 0)
 
 void changed() { g_dirty = true, g_dirty_ms = now_ms(); }
 struct OutHook {   // OUT's settings live in the INSERT file (out.h); so do the send FX's P5..P16 (sendfx-pages, XFX lines)
-  OutHook() { out::on_change = changed, fx::xknobs_changed = changed; }
+  // and the user machines' P17..P32 (0.5.0-pages, UMX lines: user/um_hi.h)
+  OutHook() { out::on_change = changed, fx::xknobs_changed = changed, umhi::changed = changed; }
 } g_out_hook;
 
 int clampi(int v, int lo, int hi) { return v < lo ? lo : v > hi ? hi : v; }
@@ -532,6 +534,7 @@ void clear() {
   clear_settings();
   out::clear();
   fx::xknobs_forget();
+  umhi::forget();
   for (int c = 0; c < kVoices; ++c)
     for (int s = 0; s < kSlots; ++s) amp::want_file(c, s, "");
   for (int c = 0; c < kVoices; ++c)

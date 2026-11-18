@@ -71,3 +71,38 @@ int rmp_build_list(uint8_t *out, int slot, int list, int gen, int replace, int t
                    const char *names, int stride);
 int rmp_build_knobs(uint8_t *out, int voice, int slot, int n, const uint8_t *knob, const uint8_t *val);   // n <= 16
 int rmp_build_slots(uint8_t *out, const uint8_t gen[5], int installed_gen, int slot, int result);       // slot 0: no pair
+
+// ---- 52 UM PAGES (0.5.0-pages; sim/protocol.py UM_PAGES, docs/um-pages.md): a user machine's P17..P32 - SRC page 2
+// (P17..P24) and SMPL page 2 (P25..P32), values the host holds per voice, no sound words, not p-lockable - and its
+// stepped P1..P16 knobs. All F0 7D 52 54 52 <ver 1> <kind> ... F7; a receiver ignores another version or kind (an
+// older Rytm drops the command: no extra pages, plain 7-bit knobs).
+//   kind 0 HEAD       host -> Rytm  <slot 1..5> <gen> <nhi 0..16> <pages: bit 0 SRC 2, bit 1 SMPL 2> <last p 0|17..32>
+//                                   <nstep 0..16> <page3 title 13> <page4 title 13>                       (40 bytes)
+//   kind 1 HI KNOBS   host -> Rytm  <slot> <gen> <n 1..4> {1A's 24-byte knob record, p 17..32} x n       (<= 107)
+//   kind 2 STEPS      host -> Rytm  <slot> <gen> <n 1..8> {<p 1..16> <kind 0 number | 1 pair> <steps >> 7>
+//                                   <steps & 7F> <def14 >> 7> <def14 & 7F> <pair names 0 | 2..36>} x n    (<= 67)
+//   kind 3 PAIR NAMES host -> Rytm  <slot> <gen> <p 1..16> <total 2..36> <first> <n 1..12> {<name 7>} x n (<= 98)
+//   kind 4 VALUES     both ways     <voice 0..7> <slot 1..5> <first p 17..32> <n 1..16> <value 0..127> x n (<= 28)
+//   kind 5 ASK        Rytm -> host  <slot 0 all | 1..5>                                                   (9 bytes)
+// gen: the slot's 1A generation the information belongs to (HEAD .. PAIR NAMES follow every 1A part 0 the host sends).
+#define RMP_CMD_PAGES 0x52
+#define RMP_PAGES_VER 1
+enum { RMP_PG_HEAD = 0, RMP_PG_KNOBS = 1, RMP_PG_STEPS = 2, RMP_PG_PAIR = 3, RMP_PG_VALUES = 4, RMP_PG_ASK = 5 };
+#define RMP_PG_KNOBS_PER_MSG 4
+#define RMP_PG_STEPS_PER_MSG 8
+#define RMP_PG_PAIR_PER_MSG 12
+#define RMP_PG_NAME_CHARS 7
+struct rmp_pages;
+struct rmp_pg_values { uint8_t voice, slot, first, n, v[16]; };
+// Builders (out: RMP_MSG_MAX bytes; the length, 0 when there is no such message). pg null or not present: a HEAD of
+// none (nhi 0, nstep 0, no titles: the Rytm drops what it held for the slot).
+int rmp_build_pg_head(uint8_t *out, int slot, int gen, const rmp_pages *pg);
+int rmp_build_pg_knobs(uint8_t *out, int slot, int gen, const rmp_pages *pg, int part);   // part 0..: hi[4 part ..]
+int rmp_build_pg_steps(uint8_t *out, int slot, int gen, const rmp_pages *pg, int part);   // part 0..: step[8 part ..]
+// names[0..total-1] (NUL-terminated, 7 characters used) of stepped knob p: entries first..first+count-1
+int rmp_build_pg_pair(uint8_t *out, int slot, int gen, int p, const char (*names)[8], int total, int first, int count);
+int rmp_build_pg_values(uint8_t *out, int voice, int slot, int first, int n, const uint8_t *v);    // n 1..16, <= P32
+// A whole message: true and *x for a well-formed VALUES (voice 0..7, slot 1..5, first 17..32, n 1..16 not past P32,
+// values 0..127); rmp_parse_pg_ask: an ASK with slot 0..5 in *slot.
+bool rmp_parse_pg_values(const uint8_t *m, int n, rmp_pg_values *x);
+bool rmp_parse_pg_ask(const uint8_t *m, int n, int *slot);

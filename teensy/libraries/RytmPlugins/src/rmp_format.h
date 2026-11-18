@@ -129,6 +129,7 @@ typedef struct __attribute__((packed)) {
 #define RMP_PAGES_STEPS 16             /* stepped knobs at most (P1..P16) */
 #define RMP_PAGES_NAMES 255            /* the block's name table at most */
 #define RMP_PAGES_FOOTER 6             /* = RMP_LABELS_FOOTER: u16 length, magic */
+#define RMP_PAGES_MAX_BYTES (RMP_PAGES_HEAD + 26u * RMP_PAGES_KNOBS + 8u * RMP_PAGES_STEPS + 8u * RMP_PAGES_NAMES + RMP_PAGES_FOOTER)   /* 2620 */
 enum { RMP_STEP_NUMBER = 0, RMP_STEP_PAIR = 1 };
 typedef struct __attribute__((packed)) {
   uint8_t p, kind; uint16_t steps, def14; uint8_t name_first, name_count;

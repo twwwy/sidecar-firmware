@@ -25,6 +25,7 @@
 #include "store/store.h"
 #include "ui/extra.h"
 #include "ui/remote.h"
+#include "user/um_hi.h"
 #include "voices.h"
 
 using namespace core;
@@ -1306,6 +1307,30 @@ int main() {
       CHECK(fx::control.xtype[0] == fx::kFirstUser && fx::control.xtag[0] == 0x0abc && fx::control.xn[0] == 12 &&
             fx::control.xknob[0][0] == 10 && fx::control.xknob[0][11] == 21 && fx::control.xtype[1] == 0xFF);
       printf("card: the XFX lines round trip (%s)\n", fn.c_str());
+      ins::reset();
+    }
+    // 0.5.0-pages: a user machine's P17..P32 per voice in the kit's file ("UMX V3 17 2 1a2b 10 11 12 13", 4 a line, as
+    // many as it has), read back with its slot and tag; another kit's load forgets them (um.cpp then takes the defaults)
+    {
+      ins::kit_changed(13);   // kit 14: a file of its own
+      umhi::Track& t = umhi::track[2];
+      t.slot = 1, t.tag = 0x1a2b, t.n = 6;
+      for (int j = 0; j < umhi::kHi; ++j) t.v[j] = (uint8_t)(10 + j);
+      umhi::changed();   // (as a turn on the Rytm marks it)
+      host_fake_time(true, us += 1100000);
+      for (int i = 0; i < 64; ++i) idle_save();
+      std::string fn = std::string(tmpl) + "/.rytm/ins/INS/k014.txt";
+      std::string got = rd_file(fn);
+      CHECK(got.find("UMX V3 17 2 1a2b 10 11 12 13\n") != std::string::npos &&
+            got.find("UMX V3 21 2 1a2b 14 15 16 17\n") != std::string::npos && got.find("UMX V3 25") == std::string::npos &&
+            got.find("UMX V1") == std::string::npos);
+      uint32_t g = umhi::gen[2];
+      ins::kit_changed(4);   // kit 5's file has no UMX line
+      CHECK(t.slot == umhi::kNone && t.v[0] == 0 && t.n == 0 && umhi::gen[2] != g);
+      ins::kit_changed(13);
+      CHECK(t.slot == 1 && t.tag == 0x1a2b && t.n == 8 && t.v[0] == 10 && t.v[5] == 15 && t.v[7] == 17 && t.v[8] == 0 &&
+            umhi::track[0].slot == umhi::kNone);
+      printf("card: the UMX lines round trip (%s)\n", fn.c_str());
       ins::reset();
     }
     // the OUT route (core/fx/out.h) in the kit's file: "OUT V3 POST 90 20 100 30", read back; a default voice no line

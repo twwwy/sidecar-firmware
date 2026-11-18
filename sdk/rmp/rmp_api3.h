@@ -34,6 +34,9 @@ enum {                           /* what a host has (rmp3_host.caps), a plugin n
   RMP3_CAP_PAGES     = 1u << 8,  /* the manifest's pages */
   RMP3_CAP_FX_P16    = 1u << 9,  /* an effect's b->p carries P5..P16 too, held by the host (the Rytm's SEND FX pages
                                     2 / 3), started from the manifest's defaults; without it they are 0 there */
+  RMP3_CAP_UM_P32    = 1u << 10, /* a machine's P17..P32 (the manifest's knobs_hi: the Rytm's SRC / SMPL page 2), held by
+                                    the host per track and handed through rmp_plugin's params_hi (rmp_api.h
+                                    RMP_P_PARAMS_HI), as P1..P16 through params(); without it params_hi is never called */
 };
 
 typedef struct rmp3_host {       /* 96 B on AArch64 */

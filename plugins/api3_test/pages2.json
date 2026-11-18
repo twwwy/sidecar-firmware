@@ -1,0 +1,232 @@
+{
+  "id": "rytm.v2_pages",
+  "version": "1.0.0",
+  "name": "PAGES2",
+  "short": "PGS",
+  "licence": "MIT",
+  "page2": "params",
+  "max_voices": 4,
+  "knobs": [
+    {
+      "p": 1,
+      "long": "One",
+      "short": "P1",
+      "default": 0
+    },
+    {
+      "p": 2,
+      "long": "Two",
+      "short": "P2",
+      "default": 100
+    },
+    {
+      "p": 3,
+      "long": "View",
+      "short": "VIEW",
+      "default": 0
+    },
+    {
+      "p": 4,
+      "long": "Pair",
+      "short": "PAIR",
+      "steps": 361,
+      "text": "pair",
+      "pair_names": [
+        "N1",
+        "N2",
+        "N3",
+        "N4",
+        "N5",
+        "N6",
+        "N7",
+        "N8",
+        "N9",
+        "N10",
+        "N11",
+        "N12",
+        "N13",
+        "N14",
+        "N15",
+        "N16",
+        "N17",
+        "N18",
+        "N19"
+      ],
+      "default14": 8128
+    },
+    {
+      "p": 5,
+      "long": "Steps",
+      "short": "STP",
+      "steps": 5,
+      "default": 64
+    },
+    {
+      "p": 6,
+      "long": "Knob 6",
+      "short": "K6",
+      "default": 64
+    },
+    {
+      "p": 7,
+      "long": "Knob 7",
+      "short": "K7",
+      "default": 64
+    },
+    {
+      "p": 8,
+      "long": "Knob 8",
+      "short": "K8",
+      "default": 64
+    },
+    {
+      "p": 9,
+      "long": "Knob 9",
+      "short": "K9",
+      "default": 64
+    },
+    {
+      "p": 10,
+      "long": "Knob 10",
+      "short": "K10",
+      "default": 64
+    },
+    {
+      "p": 11,
+      "long": "Knob 11",
+      "short": "K11",
+      "default": 64
+    },
+    {
+      "p": 12,
+      "long": "Knob 12",
+      "short": "K12",
+      "default": 64
+    },
+    {
+      "p": 13,
+      "long": "Knob 13",
+      "short": "K13",
+      "default": 64
+    },
+    {
+      "p": 14,
+      "long": "Knob 14",
+      "short": "K14",
+      "default": 64
+    },
+    {
+      "p": 15,
+      "long": "Knob 15",
+      "short": "K15",
+      "default": 64
+    },
+    {
+      "p": 16,
+      "long": "Knob 16",
+      "short": "K16",
+      "default": 64
+    }
+  ],
+  "knobs_hi": [
+    {
+      "p": 17,
+      "long": "High 17",
+      "short": "H17",
+      "default": 10
+    },
+    {
+      "p": 18,
+      "long": "High 18",
+      "short": "H18",
+      "default": 17
+    },
+    {
+      "p": 19,
+      "long": "High 19",
+      "short": "H19",
+      "default": 24
+    },
+    {
+      "p": 20,
+      "long": "High 20",
+      "short": "H20",
+      "default": 1,
+      "look": "list",
+      "text": "enum",
+      "names": [
+        "Sine",
+        "Tri",
+        "Saw"
+      ]
+    },
+    {
+      "p": 21,
+      "long": "High 21",
+      "short": "H21",
+      "default": 38
+    },
+    {
+      "p": 22,
+      "long": "High 22",
+      "short": "H22",
+      "default": 45
+    },
+    {
+      "p": 23,
+      "long": "High 23",
+      "short": "H23",
+      "default": 52
+    },
+    {
+      "p": 24,
+      "long": "High 24",
+      "short": "H24",
+      "default": 59
+    },
+    {
+      "p": 25,
+      "long": "High 25",
+      "short": "H25",
+      "default": 66
+    },
+    {
+      "p": 26,
+      "long": "High 26",
+      "short": "H26",
+      "default": 73
+    },
+    {
+      "p": 27,
+      "long": "High 27",
+      "short": "H27",
+      "default": 80
+    },
+    {
+      "p": 28,
+      "long": "High 28",
+      "short": "H28",
+      "default": 87
+    },
+    {
+      "p": 29,
+      "long": "High 29",
+      "short": "H29",
+      "default": 94
+    },
+    {
+      "p": 30,
+      "long": "High 30",
+      "short": "H30",
+      "default": 101
+    },
+    {
+      "p": 32,
+      "long": "High 32",
+      "short": "H32",
+      "default": 115
+    }
+  ],
+  "page3_title": "SRC 2 TITLE",
+  "page4_title": "SMPL 2 TITLE"
+}

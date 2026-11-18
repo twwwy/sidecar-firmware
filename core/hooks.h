@@ -23,7 +23,12 @@ struct Hooks {
   // voice vi's P(k+1) as its user slot's manifest labels it now (the short label, the set a list knob picks): into b,
   // "" when that knob has none (unused); null hook or a false return: no plugin on the voice (core/ui voice_label)
   bool (*user_label)(int vi, int k, char* b, int cap);
+  // voice vi's P(k+1) as text when its machine's manifest makes it a stepped knob (0.5.0-pages: a pair's "B3 / B12", a
+  // number's entry); false: a plain knob (show its number), or no plugin. Any core (the display, the web).
+  bool (*user_value_text)(int vi, int k, char* b, int cap);
   void (*slot_ask)(const uint8_t* d, int len);      // 0x19 (null: core/slots.cpp)
+  void (*slot_pages)(const uint8_t* d, int len);    // 0x52 UM PAGES from the Rytm (0.5.0-pages; null: ignored)
+  void (*slot_hello)();                       // 0x35: the Rytm's USB port came up (null: ignored)
   void (*slot_assign)(const uint8_t* d, int len);   // 0x1E (null: core/slots.cpp)
   void (*project_seen)();                     // any 0x10 arrived (null: core/slots.cpp's rate-limited 1D)
   void (*project_changed)();                  // 0x10 named another project

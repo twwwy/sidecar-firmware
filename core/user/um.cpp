@@ -25,12 +25,14 @@ namespace cardq = core::cardq;
 #include "rmp_resolve.h"
 #include "rmp_slots.h"
 #include "ui/remote.h"
+#include "user/um_hi.h"
 #include "voices.h"
 
 // The board's heap for the package buffer and the voices' state (weak: the C++ heap; the Pi's platform has its own).
 extern "C" void* um_heap(uint32_t bytes);
 
 namespace um {
+namespace umhi = core::umhi;
 namespace {
 
 constexpr uint32_t kChunk = 8192;              // the card read of one idle step
@@ -66,12 +68,15 @@ struct Pkg {
   char why[40];           // else why not
   rmp_desc desc;
   rmp_labels lbl;         // labels that follow a list knob (rmp_format.h RMP_LABELS_*; nsets 0: none)
+  rmp_pages pg;           // 0.5.0-pages: P17..P32 and the stepped knobs (rmp_format.h RMP_PAGES_*; present 0: none)
 #if UM_NAMES_CACHE
   // the manifest's name table (every list knob's value names), read once at the scan: the Rytm's ENUM ASK is answered
   // from here, never from the card (send_enum runs in the SysEx handler on the control core; a card read there took
   // 3 ms a time - an underrun on every ask, and a label set following its ENGINE / TYPE asks after every switch)
   uint8_t names[kNamesMax * RMP_ENUM_NAME_BYTES];
   uint16_t nnames;        // entries cached (0: none; a table cut short: what it holds)
+  // 0.5.0-pages: the pages block's own name table (P17..P32's lists, the pair knobs' names), read at the scan too
+  uint8_t pgnames[RMP_PAGES_NAMES * RMP_ENUM_NAME_BYTES];
 #endif
 };
 
@@ -277,12 +282,16 @@ uint32_t g_job_off = 0, g_job_len = 0, g_job_crc = 0;
 // ---- voices
 uint8_t* g_vstate[core::kVoices];
 int8_t g_cur[core::kVoices];       // the slot whose voice_init the voice's state had; -1 none
+uint32_t g_vhi[core::kVoices];     // 0.5.0-pages: umhi::gen the voice's own state was last handed (params_hi)
+bool hi_follow();
+void hi_push(int vi);
 uint8_t g_mis = 0;                 // sound-tag mismatch, bit vi
 // E0 (core/inst.h): the instances' states, one per instance of the pool (core::inst::kTotal, placed at boot), each the
 // state of the slot g_icur[i] (-1 none) for voice g_ivi[i]
 constexpr int kInst = 32;   // = core::inst::kTotal (static_assert below)
 uint8_t* g_istate[kInst];
 int8_t g_icur[kInst], g_ivi[kInst];
+uint32_t g_ihi[kInst];             // 0.5.0-pages: ... each poly instance's state
 
 // ---- the measured cost: each voice's render time by slot (a render core adds to its voice's row; a voice renders
 // on one core at a time), summed by the control core against the slot's baseline at its last load
@@ -489,6 +498,8 @@ void lbl16_update(int s, const rmp_desc* p) {
   }
   g_lbl16_ok[s] = true;
 }
+void steps_update(int s);   // (0.5.0-pages, below)
+void send_pages(int s);
 void meta_poll() {
   lbl_update();
   for (int s = 0; s < kSlots; ++s) {
@@ -496,6 +507,7 @@ void meta_poll() {
     rmp_desc d;
     const rmp_desc* p = slot_desc(s, &d);
     lbl16_update(s, p);
+    steps_update(s);
     if (!settled(s)) continue;   // (its presets scanned first)
     // the preset list's fingerprint too: a list change moves the generation (the Rytm's name cache)
     // and the reason (the name the Rytm shows for a non-READY slot: "!ROOM NPPR")
@@ -555,6 +567,7 @@ void send_meta(int s) {
   int st = rmp_proto_state(g_slot[s].st);
   core::to_rytm(m, rmp_build_meta_head_why(m, s + 1, g, st, slot_flags(s), p, g_slot[s].fp, rmp_why_of(st, RMP_WHY_NONE)));
   for (int part = 1; p && part < rmp_meta_nparts(p); ++part) core::to_rytm(m, rmp_build_meta_part(m, s + 1, g, part, p));
+  send_pages(s);   // 0.5.0-pages: P17..P32 and the stepped knobs, of this 1A's gen (an older Rytm drops 52)
 }
 void send_enum(int s, int arg) {
   char names[RMP_ENUM_MAX][8];
@@ -593,6 +606,99 @@ void send_enum(int s, int arg) {
     first += c;
   } while (first < n);
 }
+// ---- 0.5.0-pages (docs/um-pages.md): a machine's P17..P32 and stepped knobs, from its package's RPG1 block
+// The pages of the package slot s names (the map's, as slot_desc: what the Rytm's 1A describes); null none.
+const rmp_pages* slot_pages(int s) {
+  int k = s >= 0 && s < kSlots ? find_slot(s) : -1;
+  return k >= 0 && g_pkg[k].pg.present ? &g_pkg[k].pg : nullptr;
+}
+// n names of the pages block's own table from entry first (P17..P32's lists, a pair knob's names), into names[][8]
+// (NUL-terminated, 7 characters): n, 0 none or unreadable.
+int pg_names(int s, uint32_t first, uint32_t n, char names[RMP_ENUM_MAX][8]) {
+  memset(names, 0, RMP_ENUM_MAX * 8);
+  int k = s >= 0 && s < kSlots ? find_slot(s) : -1;
+  if (k < 0 || !g_pkg[k].pg.present || !n || n > RMP_ENUM_MAX || first + n > g_pkg[k].pg.nnames) return 0;
+#if UM_NAMES_CACHE
+  for (uint32_t i = 0; i < n; ++i) memcpy(names[i], g_pkg[k].pgnames + RMP_ENUM_NAME_BYTES * (first + i), 7);
+  return (int)n;
+#else
+  core::File f;
+  if (!f.open(g_pkg[k].file, core::kRead)) return 0;
+  rmp_step_desc t{};
+  t.kind = RMP_STEP_PAIR, t.name_first = (uint8_t)first, t.name_count = (uint8_t)n;
+  int r = rmp_pages_pair_names(&g_pkg[k].pg, &t, file_rd, &f, names);
+  f.close();
+  return r < 0 ? 0 : r;
+#endif
+}
+// 52 HEAD, HI KNOBS, STEPS, PAIR NAMES for slot s, after each 1A part 0 (send_meta) and on the Rytm's 52 ASK: the gen
+// is the 1A's. A HEAD of none for a slot without pages (the Rytm drops what it held).
+void send_pages(int s) {
+  uint8_t m[RMP_MSG_MAX];
+  const rmp_pages* pg = slot_pages(s);
+  int g = g_meta.gen[s];
+  core::to_rytm(m, rmp_build_pg_head(m, s + 1, g, pg));
+  for (int part = 0, n; (n = rmp_build_pg_knobs(m, s + 1, g, pg, part)); ++part) core::to_rytm(m, n);
+  for (int part = 0, n; (n = rmp_build_pg_steps(m, s + 1, g, pg, part)); ++part) core::to_rytm(m, n);
+  for (int j = 0; pg && j < pg->nstep; ++j) {
+    const rmp_step_desc& st = pg->step[j];
+    if (st.kind != RMP_STEP_PAIR) continue;
+    char names[RMP_ENUM_MAX][8];
+    int n = pg_names(s, st.name_first, st.name_count, names);
+    for (int f = 0; f < n; f += RMP_PG_PAIR_PER_MSG) core::to_rytm(m, rmp_build_pg_pair(m, s + 1, g, st.p, names, n, f, RMP_PG_PAIR_PER_MSG));
+  }
+}
+// 19 ASK ENUM arg 16..31: P17..P32's list names (1B list = arg, as P1..P16's 0..15), from the pages block's table
+void send_enum_hi(int s, int arg) {
+  char names[RMP_ENUM_MAX][8];
+  const rmp_pages* pg = slot_pages(s);
+  int q = pg ? rmp_pages_find(pg, arg + 1) : -1;
+  int n = q >= 0 ? pg_names(s, pg->hi[q].enum_first, pg->hi[q].enum_count, names) : 0;
+  uint8_t m[RMP_MSG_MAX];
+  int first = 0;
+  do {
+    int c = n - first < RMP_LIST_PER_MSG ? n - first : RMP_LIST_PER_MSG;
+    core::to_rytm(m, rmp_build_list(m, s + 1, arg, g_meta.gen[s], first == 0, n, first, c, names[first], 8));
+    first += c;
+  } while (first < n);
+}
+// The stepped knobs as the display and the web show them (hooks.user_value_text, any core): published by meta_poll
+// (control core) as lbl16; steps 0: a plain knob. A torn read shows at worst one wrong text for one poll.
+struct StepPub { uint16_t steps; uint8_t kind, npair; char names[RMP_ENUM_MAX][8]; };
+StepPub g_step16[kSlots][16];
+void steps_update(int s) {
+  const rmp_pages* pg = slot_pages(s);
+  for (int k = 0; k < 16; ++k) {
+    const rmp_step_desc* st = pg ? rmp_pages_step(pg, k + 1) : nullptr;
+    StepPub& x = g_step16[s][k];
+    if (!st) { x.steps = 0; continue; }
+    if (x.steps == st->steps && x.kind == st->kind && x.npair == (st->kind == RMP_STEP_PAIR ? st->name_count : 0)) continue;
+    x.steps = 0;   // (while the names change: plain)
+    x.kind = st->kind;
+    x.npair = st->kind == RMP_STEP_PAIR ? (uint8_t)pg_names(s, st->name_first, st->name_count, x.names) : 0;
+    if (st->kind != RMP_STEP_PAIR || x.npair == st->name_count) __atomic_store_n(&x.steps, st->steps, __ATOMIC_RELEASE);
+  }
+}
+// core::hooks.user_value_text: voice vi's P(k+1) as text when it is a stepped knob ("B3 / B12" for a pair, the entry
+// 0..steps-1 for a number); false for a plain knob (the caller shows the number 0..127)
+bool on_value_text(int vi, int k, char* b, int cap) {
+  if (vi < 0 || vi >= core::kVoices || k < 0 || k > 15 || cap < 1) return false;
+  int s = core::v[vi].user;
+  if (s < 0 || s >= kSlots) return false;
+  const StepPub& x = g_step16[s][k];
+  uint32_t n = __atomic_load_n(&x.steps, __ATOMIC_ACQUIRE);
+  if (!n) return false;
+  uint32_t q = rmp_step_entry_of(n, core::v[vi].p[k]);
+  if (x.kind == RMP_STEP_PAIR) {
+    char t[RMP_STEP_TEXT_BYTES];
+    rmp_step_pair_text(x.names, x.npair, q, t);
+    sniprintf(b, cap, "%s", t);
+  } else {
+    sniprintf(b, cap, "%u", (unsigned)q);
+  }
+  return true;
+}
+
 void send_installed() {
   uint8_t m[RMP_MSG_MAX];
   char names[RMP_LIST_PER_MSG][14];
@@ -1447,6 +1553,7 @@ void on_report(int vi, int s, int was, int note, int vel, int tag) {
     pv_reset(vi);
     g_pv_new |= bit;   // its next decision is a first one
     c_vfn(s, rmp_voice_enter_of(sl.p), st, "voice_enter");
+    g_vhi[vi] = umhi::gen[vi] - 1;   // (0.5.0-pages: a fresh state, params_hi below)
   }
   // presets (rmp_pv): what this report means for the voice's preset; a load runs from idle()
   if (note >= 0) g_last_trig |= bit;
@@ -1457,6 +1564,8 @@ void on_report(int vi, int s, int was, int note, int vel, int tag) {
   float q[16];
   pv_params(vi, s, note >= 0, q);
   c_params(s, st, q);
+  hi_follow();
+  hi_push(vi);   // 0.5.0-pages: P17..P32 after params(), before the note (voice_init's state: always)
   if (muted(s)) {
     x.live = false;
     return;
@@ -1538,6 +1647,172 @@ bool on_render2(int vi, float* l, float* r) {
     r[k] = r[k] == r[k] ? (r[k] > 1.0f ? 1.0f : r[k] < -1.0f ? -1.0f : r[k]) : 0.0f;
   }
   return true;
+}
+
+// ---- 0.5.0-pages: a voice's P17..P32 (user/um_hi.h holds them; docs/um-pages.md)
+int16_t g_hi_sent[core::kVoices][umhi::kHi];   // what the Rytm was last told (52 VALUES), -1 unknown
+int8_t g_hi_sent_slot[core::kVoices];
+bool g_pg_up = false;                // the Rytm listens (its 52, a hello, a 19 ASK META): values go out from then on
+uint32_t g_hi_all_ms = 0;
+constexpr uint32_t kHiRefreshMs = 2000;   // every voice's values again (as the send FX's BASE / WIDTH, sendfx-pages)
+// The package slot s plays (its loaded one): its pages, null none.
+const rmp_pages* loaded_pages(int s) {
+  int k = s >= 0 && s < kSlots ? g_slot[s].pkg : -1;
+  return k >= 0 && k < g_npkg && g_pkg[k].pg.present ? &g_pkg[k].pg : nullptr;
+}
+int hi_count(const rmp_pages* pg) {   // P17..P(16 + n) are the machine's: n = its highest P17..P32 - 16, 0 none
+  int n = 0;
+  for (int k = 0; pg && k < pg->nhi; ++k)
+    if (pg->hi[k].p - 16 > n) n = pg->hi[k].p - 16;
+  return n;
+}
+void hi_defaults(const rmp_pages* pg, uint8_t* v) {   // the manifest's defaults; a P without a knob 0
+  for (int j = 0; j < umhi::kHi; ++j) {
+    int q = pg ? rmp_pages_find(pg, umhi::kFirstP + j) : -1;
+    v[j] = q >= 0 ? pg->hi[q].def : 0;
+  }
+}
+bool hi_own(int vi, int s) {   // voice vi's held values are slot s's machine's
+  const umhi::Track& t = umhi::track[vi];
+  return s >= 0 && s < kSlots && t.slot == s && t.tag == g_slot[s].fp;
+}
+// What params_hi gets: the voice's values once they are its machine's (hi_follow), until then the manifest's defaults
+// (never another machine's)
+void hi_values(int vi, int s, float* q) {
+  uint8_t d[umhi::kHi];
+  const uint8_t* v = umhi::track[vi].v;
+  if (!hi_own(vi, s)) hi_defaults(loaded_pages(s), d), v = d;
+  for (int j = 0; j < umhi::kHi; ++j) q[j] = (float)v[j];
+}
+void c_params_hi(int s, void* st, const float* q) {
+  rmp_params_fn f = rmp_params_hi_of(g_slot[s].p);
+  if (f) gcall(s, "params_hi", [&] { f(st, q); });
+}
+// Voice vi's states (its own, its poly instances / unison stack) get its values unless they have them already
+void hi_push(int vi) {
+  if (vi < 0 || vi >= core::kVoices) return;
+  uint32_t gn = umhi::gen[vi];
+  int s = g_cur[vi];
+  float q[umhi::kHi];
+  bool have = false;
+  if (g_vhi[vi] != gn) {   // (a voice without a state now: handed its values at its voice_init)
+    g_vhi[vi] = gn;
+    if (s >= 0 && g_slot[s].st == RMP_SLOT_READY && g_slot[s].p && !muted(s) && rmp_params_hi_of(g_slot[s].p)) {
+      hi_values(vi, s, q), have = true;
+      VNow now(vi);
+      c_params_hi(s, g_vstate[vi], q);
+    }
+  }
+  for (int i = 0; i < kInst; ++i) {
+    int si = g_icur[i];
+    if (g_ivi[i] != vi || si < 0 || g_ihi[i] == gn) continue;
+    g_ihi[i] = gn;
+    if (g_slot[si].st != RMP_SLOT_READY || !g_slot[si].p || muted(si) || !rmp_params_hi_of(g_slot[si].p)) continue;
+    if (!have || si != s) hi_values(vi, si, q), have = si == s;
+    VNow now(vi);
+    c_params_hi(si, g_istate[i], q);
+  }
+}
+// The voices' values follow their machine: a voice on a READY slot whose values are another machine's (or none: a kit
+// file without UMX lines for it) takes this one's manifest defaults. Not saved (the defaults come back from the
+// manifest; a turn marks the kit's file). A voice on a built-in machine keeps what it held.
+bool hi_follow() {
+  bool did = false;
+  for (int vi = 0; vi < core::kVoices; ++vi) {
+    int s = core::v[vi].user;
+    if (s < 0 || s >= kSlots || g_slot[s].st != RMP_SLOT_READY || hi_own(vi, s)) continue;
+    umhi::Track& t = umhi::track[vi];
+    const rmp_pages* pg = loaded_pages(s);
+    hi_defaults(pg, t.v);
+    t.n = (uint8_t)hi_count(pg), t.slot = (uint8_t)s, t.tag = g_slot[s].fp;
+    ++umhi::gen[vi];
+    did = true;
+  }
+  return did;
+}
+// 52 VALUES out: a voice's P17..P(16 + n) when they differ from what the Rytm was last told (a follow, a kit load, the
+// console), all of them every kHiRefreshMs, after its ASK and a hello; only for a voice on a user slot whose machine
+// has P17..P32, and only once the Rytm was heard (g_pg_up).
+bool hi_out() {
+  if (!g_pg_up) return false;
+  uint32_t now = core::now_ms();
+  if (now - g_hi_all_ms >= kHiRefreshMs) {
+    for (int8_t& x : g_hi_sent_slot) x = -1;
+    g_hi_all_ms = now;
+  }
+  bool sent = false;
+  for (int vi = 0; vi < core::kVoices; ++vi) {
+    int s = core::v[vi].user;
+    const umhi::Track& t = umhi::track[vi];
+    if (!hi_own(vi, s) || !t.n) continue;
+    bool same = g_hi_sent_slot[vi] == s;
+    for (int j = 0; same && j < t.n; ++j) same = g_hi_sent[vi][j] == t.v[j];
+    if (same) continue;
+    uint8_t m[RMP_MSG_MAX];
+    core::to_rytm(m, rmp_build_pg_values(m, vi, s + 1, umhi::kFirstP, t.n, t.v));
+    for (int j = 0; j < umhi::kHi; ++j) g_hi_sent[vi][j] = j < t.n ? t.v[j] : -1;
+    g_hi_sent_slot[vi] = (int8_t)s;
+    sent = true;
+  }
+  return sent;
+}
+void hi_all() {   // the Rytm asked or came up: what its pages show may be its defaults
+  for (int8_t& x : g_hi_sent_slot) x = -1;
+  g_pg_up = true;
+  g_hi_all_ms = core::now_ms();
+}
+// One P17..P32 value set (a turn on the Rytm's page, the console): taken while the voice's values are slot s's machine's
+// and within the P its machine has; the kit's file marked to be saved, the states handed them. False: not taken.
+bool hi_set(int vi, int s, int first, const uint8_t* v, int n) {
+  if (vi < 0 || vi >= core::kVoices || first < umhi::kFirstP || n < 1 || first + n - 1 > umhi::kFirstP + umhi::kHi - 1) return false;
+  hi_follow();
+  if (!hi_own(vi, s) || g_slot[s].st != RMP_SLOT_READY) return false;
+  umhi::Track& t = umhi::track[vi];
+  int j0 = first - umhi::kFirstP;
+  if (j0 + n > t.n) return false;
+  bool ch = false;
+  for (int k = 0; k < n; ++k) {
+    uint8_t x = v[k] > 127 ? 127 : v[k];
+    if (t.v[j0 + k] != x) t.v[j0 + k] = x, ch = true;
+  }
+  if (ch) {
+    ++umhi::gen[vi];
+    if (umhi::changed) umhi::changed();
+    hi_push(vi);
+  }
+  return true;
+}
+// core::hooks.slot_pages: 52 from the Rytm - VALUES (a turn: taken, the Rytm shows it, so no echo) or ASK (the pages of
+// slot n, or all, and every voice's values again)
+void on_pages(const uint8_t* d, int len) {
+  rmp_pg_values x;
+  int a;
+  if (rmp_parse_pg_values(d, len, &x)) {
+    g_pg_up = true;
+    if (!hi_set(x.voice, x.slot - 1, x.first, x.v, x.n)) return;
+    for (int k = 0; k < x.n; ++k) g_hi_sent[x.voice][x.first - umhi::kFirstP + k] = (int16_t)umhi::track[x.voice].v[x.first - umhi::kFirstP + k];
+    if (g_hi_sent_slot[x.voice] != x.slot - 1) {   // (the rest unknown to us: sent again)
+      for (int j = 0; j < umhi::kHi; ++j)
+        if (j < x.first - umhi::kFirstP || j >= x.first - umhi::kFirstP + x.n) g_hi_sent[x.voice][j] = -1;
+      g_hi_sent_slot[x.voice] = (int8_t)(x.slot - 1);
+    }
+  } else if (rmp_parse_pg_ask(d, len, &a)) {
+    meta_poll();
+    for (int s = 0; s < kSlots; ++s)
+      if (!a || a == s + 1) send_pages(s);
+    hi_all();
+    hi_out();
+  }
+}
+void on_hello() { hi_all(); }   // core::hooks.slot_hello: 0x35, the Rytm's USB port came up
+// One step of idle(): the follow, the states handed new values (a kit load, the console), the Rytm told. True: did some.
+bool hi_pass() {
+  bool did = hi_follow();
+  for (int vi = 0; vi < core::kVoices; ++vi)
+    if (g_vhi[vi] != umhi::gen[vi]) hi_push(vi), did = true;
+  for (int i = 0; i < kInst; ++i)
+    if (g_ivi[i] >= 0 && g_icur[i] >= 0 && g_ihi[i] != umhi::gen[g_ivi[i]]) hi_push(g_ivi[i]), did = true;
+  return hi_out() || did;
 }
 
 // ---- the map
@@ -1927,6 +2202,11 @@ void scan_check(Pkg& e, rmp_read_fn rd, void* ctx) {
   }
   if (ok && !rmp_manifest_read(&g_scan_info, rd, ctx, &e.desc)) { ok = false; scan_fail(e, "bad manifest"); }
   if (ok) rmp_manifest_labels(&g_scan_info, rd, ctx, &e.desc, &e.lbl);   // (none, or malformed: the static labels)
+  if (ok) rmp_manifest_pages(&g_scan_info, rd, ctx, &e.desc, &e.pg);      // 0.5.0-pages (none, or malformed: none)
+#if UM_NAMES_CACHE
+  if (ok && e.pg.present && e.pg.nnames && !rd(ctx, e.pg.names_at, e.pgnames, (uint32_t)e.pg.nnames * RMP_ENUM_NAME_BYTES))
+    e.pg = rmp_pages{};   // (its names not readable: as without the block)
+#endif
 #if UM_NAMES_CACHE
   e.nnames = 0;
   if (ok && e.desc.names_at) {   // the name table, whole: the entries every knob's enum_first + enum_count reach
@@ -1958,7 +2238,8 @@ constexpr uint32_t kScanRead = 32768;      // one card operation of ~2 ms on the
 constexpr uint32_t kCrcUs = 300;
 constexpr uint32_t kCapHead = 84u + 32u * 26u + (256u + RMP_ENUM_MAX) * RMP_ENUM_NAME_BYTES;   // head, knobs, name table
 constexpr uint32_t kCapTail = 5u + RMP_LABELS_DEPS + RMP_LABELS_PARAMS + RMP_LABELS_SETS * RMP_ENUM_NAME_BYTES +
-                              RMP_LABELS_SETS * RMP_LABELS_PARAMS * RMP_LABEL_BYTES + RMP_LABELS_FOOTER;   // the labels' block
+                              RMP_LABELS_SETS * RMP_LABELS_PARAMS * RMP_LABEL_BYTES + RMP_LABELS_FOOTER +   // the labels' block
+                              RMP_PAGES_MAX_BYTES;   // and the pages block before it (0.5.0-pages)
 cardq::Req g_srq;
 cardq::DirRec g_sent[8];
 core::File g_sd;                           // the folder
@@ -2638,11 +2919,12 @@ void fx_faults() {
 // ---- API 3: the table checked, the arena, setup()
 uint32_t host_caps() {
   return RMP3_CAP_TRANSPORT | RMP3_CAP_STEREO | RMP3_CAP_EFFECT | (ex && ex->guard ? (uint32_t)RMP3_CAP_GUARD : 0u) |
-         (g_pool_bytes ? (uint32_t)RMP3_CAP_ARENA : 0u) | RMP3_CAP_FX_P16;   // (sendfx-pages: fx_run's p[4..15])
+         (g_pool_bytes ? (uint32_t)RMP3_CAP_ARENA : 0u) | RMP3_CAP_FX_P16 |   // (sendfx-pages: fx_run's p[4..15])
+         RMP3_CAP_UM_P32;   // (0.5.0-pages: a machine's params_hi, P17..P32)
 }
 void caps_names(uint32_t c, char* b, int cap) {
   static const char* const kN[] = {"transport", "arena", "guard", "stereo", "audio in", "effects", "signal bus", "block params", "pages",
-                                   "effect P5..P16"};
+                                   "effect P5..P16", "machine P17..P32"};
   b[0] = 0;
   int n = 0;
   for (int k = 0; k < (int)(sizeof kN / sizeof kN[0]); ++k)
@@ -2656,6 +2938,8 @@ bool v3_check(const rmp_plugin* p, const uint8_t* code, uint32_t bytes, const rm
   auto inside = [&](const void* q, uint64_t n) { uintptr_t a = (uintptr_t)q; return a >= c0 && n <= c1 - c0 && a <= c1 - n; };
   auto fn_ok = [&](const void* f) { return !f || (inside(f, 4) && !((uintptr_t)f & 3)); };
   const void* r = p->api >= 2u ? p->reserved[RMP_P_V3] : nullptr;
+  // 0.5.0-pages: params_hi (reserved[RMP_P_PARAMS_HI]) inside the code, for an API 2 plugin too (NULL: none)
+  if (!fn_ok((const void*)rmp_params_hi_of(p))) { copy(why, "its params_hi is outside its code", cap); return false; }
   if (!r) {
     if (p->api >= RMP_API3) { copy(why, "an API 3 table without its rmp3_plugin", cap); return false; }
     return true;   // a plain API 1 / 2 plugin: as before
@@ -3098,6 +3382,7 @@ void on_ask(const uint8_t* d, int len) {
   if (a.what == RMP_ASK_INSTALLED || core::now_ms() - g_1d_ms >= 3000) g_1d_owed = true;
   int s = a.slot - 1;
   if (a.what == RMP_ASK_META && a.slot >= 1) {
+    if (!g_pg_up) hi_all();   // (0.5.0-pages: the Rytm listens; an older one drops 52)
     g_rytm_names36 = a.arg & 1;
     core::ui::remote_rytm_040(g_rytm_names36);   // (and SMP on its knob A: rytm-mods 7h, the same flash)
     meta_poll();
@@ -3109,6 +3394,8 @@ void on_ask(const uint8_t* d, int len) {
     }
   } else if (a.what == RMP_ASK_ENUM && a.slot >= 1 && a.arg < 16) {
     send_enum(s, a.arg);
+  } else if (a.what == RMP_ASK_ENUM && a.slot >= 1 && a.arg < 32) {   // 0.5.0-pages: P17..P32's lists
+    send_enum_hi(s, a.arg);
   } else if (a.what == RMP_ASK_PRESETS && a.slot >= 1 && a.arg <= 7) {   // page arg of the names, from idle()
     g_pre_page[s] |= (uint8_t)(1u << a.arg);
   } else if (a.what == RMP_ASK_INSTALLED) {
@@ -3386,6 +3673,10 @@ void begin(const Exec* e, const char* d) {
   core::hooks.user_leave = on_leave;
   core::hooks.user_note_off = on_note_off;
   core::hooks.user_label = on_label;
+  core::hooks.user_value_text = on_value_text;   // 0.5.0-pages: stepped knobs
+  core::hooks.slot_pages = on_pages;
+  core::hooks.slot_hello = on_hello;
+  for (int8_t& x : g_hi_sent_slot) x = -1;
   core::hooks.user_render = on_render;
   core::hooks.user_render2 = on_render2;
   core::fx::user_ready = fx_ready;   // API 3's user effects in the send FX's UFX TYPEs (core/fx/send_fx.h)
@@ -3463,6 +3754,7 @@ bool idle() {
   fx_faults();
   if (fx_fresh_pass()) did = true;
   { UMT("um.upool"); if (upool_pass()) did = true; }
+  { UMT("um.hi"); if (hi_pass()) did = true; }   // 0.5.0-pages: P17..P32
   if (g_pre_again && (int32_t)(core::now_ms() - g_pre_again_ms) >= 0 && !core::fmt::pending(g_pre_path)) {   // a preset written: the lists again
     g_pre_again = false;
     for (int s = 0; s < kSlots; ++s) pre_invalidate(s);
@@ -3569,10 +3861,12 @@ bool inst_note_on(int vi, int i, float note, float vel) {
     if (!c_voice_init(s, st, vi, i)) return false;
     g_icur[i] = (int8_t)s, g_ivi[i] = (int8_t)vi;
     c_vfn(s, rmp_voice_enter_of(sl.p), st, "voice_enter");
+    g_ihi[i] = umhi::gen[vi] - 1;   // (0.5.0-pages: a fresh state)
   }
   float q[16];
   pv_params(vi, s, true, q);   // the voice's params as its own state gets them (its preset's hold, the offsets)
   c_params(s, st, q);
+  hi_push(vi);   // 0.5.0-pages: the voice's P17..P32 (every state of the track the same)
   c_note_on(s, st, note, vel < 0.0f ? 0.0f : vel > 1.0f ? 1.0f : vel);
   return !muted(s);
 }
@@ -3654,6 +3948,36 @@ bool command(const char* c, char* out, int cap) {
     return true;
   }
 #endif
+  // 0.5.0-pages: "umknob" (every voice's P17..P32), "umknob=V:P:VAL" (voice 1..8, P 17..32, VAL 0..127: as a turn on
+  // the Rytm's SRC / SMPL page 2; the voice's machine must have that P)
+  if (strncmp(c, "umknob", 6) == 0 && (c[6] == 0 || c[6] == '=')) {
+    static const char kUse[] = "umknob=V:P:VAL (V 1..8 a voice on a user slot, P 17..32 its machine has, VAL 0..127)";
+    int vi = -1, pp = -1, val = -1;
+    if (c[6] == '=') {
+      const char* q = c + 7;
+      auto num = [&q]() { int x = -1; while (*q >= '0' && *q <= '9') x = (x < 0 ? 0 : x * 10) + (*q++ - '0'); return x; };
+      vi = num() - 1;
+      if (*q == ':') ++q, pp = num();
+      if (*q == ':') ++q, val = num();
+      if (*q || vi < 0 || vi >= core::kVoices || pp < umhi::kFirstP || pp > umhi::kFirstP + umhi::kHi - 1 || val < 0 || val > 127) {
+        sniprintf(out, cap, "%s", kUse);
+        return true;
+      }
+      uint8_t x = (uint8_t)val;
+      if (!hi_set(vi, core::v[vi].user, pp, &x, 1)) { sniprintf(out, cap, "%s", kUse); return true; }
+    }
+    hi_follow();
+    int n = 0;
+    for (int w = 0; w < core::kVoices && n < cap - 1; ++w) {
+      if (vi >= 0 && w != vi) continue;
+      const umhi::Track& t = umhi::track[w];
+      if (t.slot == umhi::kNone || !t.n) continue;
+      n += sniprintf(out + n, cap - n, "%sV%d U%d P17..P%d", n ? "; " : "", w + 1, t.slot + 1, 16 + t.n);
+      for (int j = 0; j < t.n && n < cap - 1; ++j) n += sniprintf(out + n, cap - n, " %d", t.v[j]);
+    }
+    if (!n) sniprintf(out, cap, "no voice holds P17..P32 (a machine with knobs_hi on a voice first)");
+    return true;
+  }
   if (strcmp(c, "um") == 0) {
     char vb[12];
     for (int i = 0; i < g_npkg; ++i)

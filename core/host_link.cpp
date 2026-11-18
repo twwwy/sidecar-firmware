@@ -380,6 +380,10 @@ __attribute__((noinline)) CORE_COLD void host_sysex(const uint8_t* d, int len) {
       else slots_ask(d, len);
       return;
     }
+    if (d[4] == 0x52) {   // UM PAGES (0.5.0-pages: a user machine's P17..P32, docs/um-pages.md)
+      if (hooks.slot_pages) hooks.slot_pages(d, len);
+      return;
+    }
     if (d[4] == 0x1E) {   // ASSIGN (user slots)
       if (hooks.slot_assign) hooks.slot_assign(d, len);
       else slots_assign(d, len);
@@ -469,6 +473,7 @@ __attribute__((noinline)) CORE_COLD void host_sysex(const uint8_t* d, int len) {
     }
     if (d[4] == 0x35) seq::hello(len >= 9 ? d[6] << 7 | d[7] : -1);   // its seq-track mask forgotten: 2E again
 #endif
+    if (d[4] == 0x35 && hooks.slot_hello) hooks.slot_hello();   // (0.5.0-pages: the P17..P32 values again)
     if (d[4] == 0x35) link_reset("hello");   // the Rytm's USB port came up: its transport and notes unknown
 #if CORE_POLY
     if (d[4] == 0x35 && s_sendfx_hello) sendfx_bw_all();   // (sfx-basewidth: a Rytm that came up again shows its defaults)

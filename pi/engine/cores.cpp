@@ -685,9 +685,9 @@ void CEngineCores::Command (const char *p)
 	else if (masterfx_pi::Command (p))		// mfx=stats (masterfx_pi.h)
 	{
 	}
-	else if (strncmp (p, "um", 2) == 0 && (p[2] == 0 || p[2] == '='))	// the user machines (core/user/um.h)
-	{
-		char Out[120];
+	else if (strncmp (p, "um", 2) == 0 && (p[2] == 0 || p[2] == '=' || strncmp (p, "umknob", 6) == 0))	// the user machines (core/user/um.h;
+	{										// umknob: 0.5.0-pages P17..P32)
+		char Out[200];
 		if (um::command (p, Out, sizeof Out)) L->Write (From, LogNotice, "um: %s", Out);
 		else L->Write (From, LogWarning, "unknown command \"%s\" (um, um=rescan, um=assign:S:ID, um=clear:S, um=save:S:NAME, um=presets)", p);
 	}

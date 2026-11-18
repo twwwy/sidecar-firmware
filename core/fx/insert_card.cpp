@@ -14,6 +14,7 @@
 #include "fx/send_fx.h"
 #include "platform.h"
 #include "pool/pool.h"
+#include "user/um_hi.h"
 #if CORE_MSAMP
 #include "bundle/rename.h"
 #include "store/store.h"
@@ -117,6 +118,21 @@ bool from_line(const char* b) {
     if (s < 0 || s >= fx::kSlots || first < 5 || first > 16 || type < 0 || type > 127) return false;
     for (int k = 0; k < 4; ++k) v[k] = 5 + k < n ? num(w[5 + k]) : -1;
     fx::xknobs_load(s, type, (uint16_t)tag, first, v, n - 5 < 4 ? n - 5 : 4);
+    return true;
+  }
+  // 0.5.0-pages: UMX <V1..V8> <first P 17..32> <slot 1..5> <tag 4 hex> <value> ... (at most 4 a line), a user machine's
+  // P17..P32 held for the Rytm's SRC / SMPL page 2 (user/um_hi.h). An older build does not read the line: it keeps the
+  // file as it is (never written over), as any line it does not read.
+  if (n >= 6 && same_ci(w[0], "UMX")) {
+    int c = chain_from_name(w[1]), first = num(w[2]), s = num(w[3]) - 1, tag = 0, v[4];
+    for (const char* p = w[4]; *p; ++p) {
+      int d = *p >= '0' && *p <= '9' ? *p - '0' : *p >= 'a' && *p <= 'f' ? *p - 'a' + 10 : *p >= 'A' && *p <= 'F' ? *p - 'A' + 10 : -1;
+      if (d < 0 || tag > 0xFFF) return false;
+      tag = tag * 16 + d;
+    }
+    if (c < 0 || c >= kVoices || s < 0 || s > 4 || first < umhi::kFirstP || first > umhi::kFirstP + umhi::kHi - 1) return false;
+    for (int k = 0; k < 4; ++k) v[k] = 5 + k < n ? num(w[5 + k]) : -1;
+    umhi::load(c, s, (uint16_t)tag, first, v, n - 5 < 4 ? n - 5 : 4);
     return true;
   }
   if (n >= 3 && same_ci(w[0], "PEQ")) {   // ins1112: PEQ V1 40 0 64 70 (HPF LPF LOW HIGH; a missing one stays flat)
@@ -296,6 +312,13 @@ static bool save_text(bool queue) {
       add(b, sniprintf(b, sizeof b, CORE_STR("XFX %d %d %d %04x %d %d %d %d\n"), s + 1, 5 + q, ty, (unsigned)fx::control.xtag[s],
                        fx::control.xknob[s][q], fx::control.xknob[s][q + 1], fx::control.xknob[s][q + 2],
                        fx::control.xknob[s][q + 3]));   // (q 0, 4, 8: within the 12)
+  }
+  for (int v = 0; v < kVoices; ++v) {   // 0.5.0-pages: a user machine's P17..P32 (as many as it has, 4 a line)
+    const umhi::Track& x = umhi::track[v];
+    if (x.slot == umhi::kNone) continue;
+    for (int q = 0; q < x.n; q += 4)
+      add(b, sniprintf(b, sizeof b, CORE_STR("UMX %s %d %d %04x %d %d %d %d\n"), chain_name(v), umhi::kFirstP + q, x.slot + 1,
+                       (unsigned)x.tag, x.v[q], x.v[q + 1], x.v[q + 2], x.v[q + 3]));   // (q 0..12: within the 16)
   }
   if (control.route3) {
     static const char kR[] = "ROUTE B3 POST\n";
