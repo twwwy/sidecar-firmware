@@ -9,6 +9,9 @@
 static int32_t le(void *st, const uint8_t *b, int32_t n, int16_t v[16]) { (void)st; (void)b; (void)n; (void)v; return 0; }
 static void ve(void *st) { (void)st; }
 static void ph(void *st, const float *p) { (void)st; (void)p; }
+static int32_t dr(void *st, int32_t pg, uint32_t f, int32_t t, const float *p, uint8_t *fb) {
+  (void)st; (void)pg; (void)f; (void)t; (void)p; (void)fb; return 0;
+}
 int main(void) {
   assert(offsetof(rmp_plugin, magic) == 0);
   assert(offsetof(rmp_plugin, api) == 4);
@@ -32,6 +35,16 @@ int main(void) {
   assert(rmp_params_hi_of(&p) == ph);
   p.api = 1u;
   assert(rmp_params_hi_of(&p) == 0);
+  p.api = 2u;
+  /* draw (reserved[6]): the same rules */
+  assert(RMP_P_DRAW == 6 && RMP_DRAW_W == 128 && RMP_DRAW_H == 64 && RMP_DRAW_BYTES == RMP_DRAW_W * RMP_DRAW_H / 8);
+  assert(RMP_PAGE_SRC == 1 && RMP_PAGE_SMPL == 2 && RMP_PAGE_SRC2 == 3 && RMP_PAGE_SMPL2 == 4 && RMP_DRAW_LOCKED == 1u);
+  assert(RMP3_CAP_DRAW == 1u << 11 && RMP3_CAP_UM_P32 == 1u << 10);
+  assert(rmp_draw_of(&p) == 0);
+  p.reserved[RMP_P_DRAW] = RMP_FN(dr);
+  assert(rmp_draw_of(&p) == dr && rmp_params_hi_of(&p) == ph);
+  p.api = 1u;
+  assert(rmp_draw_of(&p) == 0);
   p.api = 2u;
   /* stepped knobs: the ends, a round trip, a params() value */
   assert(rmp_step_v14(361, 0) == 0 && rmp_step_v14(361, 360) == RMP_STEP_V14_MAX && rmp_step_entry(361, 16383) == 360);

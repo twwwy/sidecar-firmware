@@ -125,7 +125,11 @@ typedef struct rmp_plugin {
                          one means "no P17..P32", and a host from before it never reads reserved[5], so a plugin that
                          fills it loads and plays everywhere; a new number would make older hosts refuse it.
                          reserved[4] is RMP_P_V3's, so params_hi is reserved[5].)
-     [6..7] later APIs, NULL */
+     [RMP_P_DRAW = 6] int32_t draw(void *state, int32_t page, uint32_t flags, int32_t track, const float *p,
+                         uint8_t *fb) (rmp_draw_fn below): the machine draws its own Rytm screen (docs/um-pages.md
+                         "Plugin-drawn screens"); NULL: the host's default. Same rules for older hosts as params_hi
+                         (RMP_API stays 2; an older host never reads reserved[6]).
+     [7] later APIs, NULL */
   void *reserved[8];
 } rmp_plugin;
 #define RMP_P_PARSE 0
@@ -133,12 +137,27 @@ typedef struct rmp_plugin {
 #define RMP_P_VOICE_ENTER 2
 #define RMP_P_VOICE_LEAVE 3
 #define RMP_P_PARAMS_HI 5
+/* rmp_plugin.reserved[RMP_P_DRAW]: the machine draws its own Rytm screen (NULL: the host's default) */
+#define RMP_P_DRAW 6
+#define RMP_DRAW_W 128
+#define RMP_DRAW_H 64
+#define RMP_DRAW_BYTES 1024              /* 1 bit a pixel, row-major, 16 bytes a row, MSB = the leftmost pixel, 1 = lit */
+enum { RMP_PAGE_SRC = 1, RMP_PAGE_SMPL = 2, RMP_PAGE_SRC2 = 3, RMP_PAGE_SMPL2 = 4 };
+enum { RMP_DRAW_LOCKED = 1u << 0 };      /* flags: P1..P16 include a held step's locks */
 
 /* A function in a reserved slot of a table: RMP_FN(load_entry). */
 #define RMP_FN(f) ((void *)(f))
 typedef int32_t (*rmp_load_entry_fn)(void *state, const uint8_t *bytes, int32_t len, int16_t values[16]);
 typedef void (*rmp_voice_fn)(void *state);
 typedef void (*rmp_params_fn)(void *state, const float *p);
+/* page: RMP_PAGE_*; p[0..31] = P1..P32 as the page shows them (value + fraction/128; a P with no knob 0);
+   track 0..11; fb: RMP_DRAW_BYTES, cleared by the host. Return 1 = drawn, 0 = not handled (the host draws its
+   default for that page). Control core, between render calls, guarded, keep it under 1 ms. state is the
+   track's first voice state, or NULL when no voice plays the machine yet - a draw must not need it.
+   Pixel (x, y) from the top-left is lit when fb[y * 16 + x / 8] & (0x80 >> (x % 8)). Pages: RMP_PAGE_SRC the
+   Rytm's SRC page (P1..P8 on its encoders), RMP_PAGE_SMPL its SMPL page (P9..P16), RMP_PAGE_SRC2 / RMP_PAGE_SMPL2
+   the second SRC / SMPL page (P17..P24 / P25..P32, the manifest's knobs_hi); every page gets all 32 values. */
+typedef int32_t (*rmp_draw_fn)(void *state, int32_t page, uint32_t flags, int32_t track, const float *p, uint8_t *fb);
 typedef int32_t (*rmp_pool_info_fn)(int32_t slot, rmp_pool_info *info);
 typedef int32_t (*rmp_pool_read_fn)(int32_t slot, uint32_t pos, float *buf, int32_t n);
 /* The host reads a plugin's API-2 functions only through these (NULL for an API-1 plugin). */
@@ -153,6 +172,9 @@ static inline rmp_voice_fn rmp_voice_leave_of(const rmp_plugin *p) {
 }
 static inline rmp_params_fn rmp_params_hi_of(const rmp_plugin *p) {
   return p->api >= 2u ? (rmp_params_fn)p->reserved[RMP_P_PARAMS_HI] : (rmp_params_fn)0;
+}
+static inline rmp_draw_fn rmp_draw_of(const rmp_plugin *p) {   /* NULL for api < 2 or a NULL slot */
+  return p->api >= 2u ? (rmp_draw_fn)p->reserved[RMP_P_DRAW] : (rmp_draw_fn)0;
 }
 /* A plugin reads the host's API-2 functions only through these (NULL from an API-1 host table). */
 static inline rmp_pool_info_fn rmp_pool_info_of(const rmp_host *h) {

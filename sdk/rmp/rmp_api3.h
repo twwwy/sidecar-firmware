@@ -37,6 +37,8 @@ enum {                           /* what a host has (rmp3_host.caps), a plugin n
   RMP3_CAP_UM_P32    = 1u << 10, /* a machine's P17..P32 (the manifest's knobs_hi: the Rytm's SRC / SMPL page 2), held by
                                     the host per track and handed through rmp_plugin's params_hi (rmp_api.h
                                     RMP_P_PARAMS_HI), as P1..P16 through params(); without it params_hi is never called */
+  RMP3_CAP_DRAW      = 1u << 11, /* the host calls rmp_plugin's draw (rmp_api.h RMP_P_DRAW) for the Rytm's SRC / SMPL
+                                    pages of a track playing the machine; without it draw is never called */
 };
 
 typedef struct rmp3_host {       /* 96 B on AArch64 */
