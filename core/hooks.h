@@ -26,6 +26,14 @@ struct Hooks {
   // voice vi's P(k+1) as text when its machine's manifest makes it a stepped knob (0.5.0-pages: a pair's "B3 / B12", a
   // number's entry); false: a plain knob (show its number), or no plugin. Any core (the display, the web).
   bool (*user_value_text)(int vi, int k, char* b, int cap);
+  // Plugin-drawn screens (docs/um-pages.md; sdk/rmp/rmp_api.h RMP_P_DRAW), the control core, null without plugins.
+  // user_draw_key: nonzero while user slot `slot` (0..4) is READY, not muted and its plugin has a draw; it changes when
+  // anything the draw gets besides P1..P16 / page / flags / track changes (the plugin, voice vi's P17..P32, whether a
+  // voice plays it). 0: no draw (the host's default). user_draw: the plugin's draw for track t's view `page` (RMP_PAGE_*),
+  // p16 = P1..P16 as the page shows them, voice vi's P17..P32 added by the hook, into fb (RMP_DRAW_BYTES, row-major,
+  // cleared by the hook), guarded (a fault mutes the slot); 1 drawn, 0 not (declined, faulted, none).
+  uint32_t (*user_draw_key)(int vi, int slot);
+  int (*user_draw)(int vi, int slot, int track, int page, uint32_t flags, const float* p16, uint8_t* fb);
   void (*slot_ask)(const uint8_t* d, int len);      // 0x19 (null: core/slots.cpp)
   void (*slot_pages)(const uint8_t* d, int len);    // 0x52 UM PAGES from the Rytm (0.5.0-pages; null: ignored)
   void (*slot_hello)();                       // 0x35: the Rytm's USB port came up (null: ignored)

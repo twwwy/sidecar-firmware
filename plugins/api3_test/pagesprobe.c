@@ -8,6 +8,10 @@
 //   P3 64 and up: frames 0..3 = P29..P32 / 128, 4 = P4's entry / 512 (rmp_step_entry_of(361, p[3])),
 //                 5 = params_hi calls / 256, 6 = 0.5 an API 3 render with RMP3_CAP_UM_P32 in the host's caps,
 //                 0.375 an API 3 render without, 0.25 the API 2 render, 7 = P5's entry / 8, 8 = P1 / 128
+// Both also fill reserved[RMP_P_DRAW] (plugin-drawn screens, docs/um-pages.md; core/tests/test_um_draw.cpp): P2 1 declines
+// (returns 0), P2 2 faults; else it draws, row-major (rmp_api.h): row 0 `page` pixels from x 0 and x 127; row 1 x 0
+// when flags has RMP_DRAW_LOCKED, x 2 when state is not NULL; row 2 track + 1 pixels; row 8 + k (k 0..31) P(k+1) as
+// a bar of (int)p[k] pixels; row 40 P1's fraction x 128 pixels; rows 48..63 x lit when (x + 2 y) % 5 == 0.
 // MIT, Copyright 2026 trigcondition and contributors.
 #include "rmp/rmp_api3.h"
 
@@ -58,6 +62,26 @@ static void show(const pp *s, float *o, int32_t n, float which) {
 }
 static void f_render2(void *st, float *out, int32_t n) { show(st, out, n, 0.25f); }
 
+static void lit(uint8_t *fb, int x, int y) { fb[y * 16 + x / 8] |= (uint8_t)(0x80u >> (x % 8)); }
+static void bar(uint8_t *fb, int y, int n) {
+  for (int x = 0; x < n && x < RMP_DRAW_W; ++x) lit(fb, x, y);
+}
+static int32_t f_draw(void *st, int32_t page, uint32_t flags, int32_t track, const float *p, uint8_t *fb) {
+  if (p[1] == 1.0f) return 0;
+  if (p[1] == 2.0f) *(volatile int *)0 = 1;
+  bar(fb, 0, page);
+  lit(fb, 127, 0);
+  if (flags & RMP_DRAW_LOCKED) lit(fb, 0, 1);
+  if (st) lit(fb, 2, 1);
+  bar(fb, 2, track + 1);
+  for (int k = 0; k < RMP_PARAMS + RMP_PARAMS_HI; ++k) bar(fb, 8 + k, (int)p[k]);
+  bar(fb, 40, (int)((p[0] - (float)(int)p[0]) * 128.0f + 0.5f));
+  for (int y = 48; y < RMP_DRAW_H; ++y)
+    for (int x = 0; x < RMP_DRAW_W; ++x)
+      if ((x + 2 * y) % 5 == 0) lit(fb, x, y);
+  return 1;
+}
+
 #ifndef PAGES_PLAIN2
 static void f_render3(void *st, const rmp3_block *b) {
   show(st, b->out[0], b->n, g_caps & RMP3_CAP_UM_P32 ? 0.5f : 0.375f);
@@ -79,8 +103,8 @@ RMP_ENTRY const rmp_plugin rmp_entry = {
   .init = f_init, .voice_init = f_voice_init, .note_on = f_note_on, .note_off = f_note_off, .params = f_params,
   .render = f_render2,
 #ifndef PAGES_PLAIN2
-  .reserved = { [RMP_P_V3] = RMP_FN(&g3), [RMP_P_PARAMS_HI] = RMP_FN(f_params_hi) },
+  .reserved = { [RMP_P_V3] = RMP_FN(&g3), [RMP_P_PARAMS_HI] = RMP_FN(f_params_hi), [RMP_P_DRAW] = RMP_FN(f_draw) },
 #else
-  .reserved = { [RMP_P_PARAMS_HI] = RMP_FN(f_params_hi) },
+  .reserved = { [RMP_P_PARAMS_HI] = RMP_FN(f_params_hi), [RMP_P_DRAW] = RMP_FN(f_draw) },
 #endif
 };

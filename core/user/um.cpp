@@ -197,6 +197,7 @@ uint8_t g_jph = 0;               // the load's phase: 0 the package, 1 the arena
 enum : uint8_t { kJphImage = 0, kJphArena = 1 };
 constexpr uint32_t kZeroStep = 256u << 10;     // the arena zeroed per idle step (the slot LOADING meanwhile)
 constexpr uint32_t kCallLateUs = 500;          // a control call's limit (the proposal's; the Mini's)
+constexpr uint32_t kDrawLateUs = 1000;         // a draw's (rmp_api.h RMP_P_DRAW: "keep it under 1 ms")
 // One API 3 control call longer than the FIFO (2 ms) has already been a dropout of every track: muted at once, not
 // after three (three 15 ms params() were 45 ms of silence on the Pi 5). The host tests move it (call_stall_limit).
 constexpr uint32_t kCallStallUs = 2000;
@@ -834,7 +835,8 @@ void slot_mute(int s, const char* why, bool share = true) {
       slot_mute1(t, w);
     }
 }
-template <class F> bool gcall(int s, const char* what, F f) {
+// late_us: the call's own limit (kCallLateUs; a draw's kDrawLateUs)
+template <class F> bool gcall(int s, const char* what, F f, uint32_t late_us = kCallLateUs) {
   if (__atomic_load_n(&g_muted, __ATOMIC_ACQUIRE) >> s & 1) return false;
   uint64_t pc = 0;
   uint32_t us = 0;
@@ -845,7 +847,7 @@ template <class F> bool gcall(int s, const char* what, F f) {
     slot_mute(s, w);
     return false;
   }
-  if (us <= kCallLateUs) {
+  if (us <= late_us) {
     g_late[s] = 0;
     return true;
   }
@@ -857,7 +859,7 @@ template <class F> bool gcall(int s, const char* what, F f) {
     return false;
   }
   if (g_v3[s].p3 && ++g_late[s] >= 3) {
-    sniprintf(w, sizeof w, "muted: %s ran %u us, three late calls in a row (limit %u)", what, (unsigned)us, (unsigned)kCallLateUs);
+    sniprintf(w, sizeof w, "muted: %s ran %u us, three late calls in a row (limit %u)", what, (unsigned)us, (unsigned)late_us);
     slot_mute(s, w, false);
     return false;
   }
@@ -1713,6 +1715,40 @@ void hi_push(int vi) {
     c_params_hi(si, g_istate[i], q);
   }
 }
+// ---- plugin-drawn screens (rmp_api.h RMP_P_DRAW, docs/um-pages.md "Plugin-drawn screens"; core/ui/remote.cpp asks)
+rmp_draw_fn draw_fn(int s) {
+  if (s < 0 || s >= kSlots || g_slot[s].st != RMP_SLOT_READY || !g_slot[s].p || muted(s)) return nullptr;
+  return rmp_draw_of(g_slot[s].p);
+}
+// core::hooks.user_draw_key: what the draw gets besides P1..P16, the page, the flags and the track - the plugin (its
+// table, the code epoch), voice vi's P17..P32 as params_hi would hand them, whether vi's state is the slot's - hashed;
+// 0 while the slot cannot draw
+uint32_t on_draw_key(int vi, int s) {
+  if (vi < 0 || vi >= core::kVoices || !draw_fn(s)) return 0;
+  float q[umhi::kHi];
+  hi_values(vi, s, q);
+  uint32_t h = 2166136261u;
+  auto mix = [&](uint32_t x) { for (int i = 0; i < 4; ++i) h = (h ^ (x >> (8 * i) & 0xFF)) * 16777619u; };
+  mix((uint32_t)s), mix(g_slot[s].fp), mix((uint32_t)(uintptr_t)g_slot[s].p), mix(code_epoch()), mix(g_cur[vi] == s);
+  for (float x : q) mix((uint32_t)(x * 128.0f));
+  return h ? h : 1u;
+}
+// core::hooks.user_draw: P1..P16 from the view, P17..P32 voice vi's (hi_values: the manifest's defaults until they are
+// the machine's), the voice's state when it plays the slot (else NULL), fb cleared; guarded with kDrawLateUs
+int on_draw(int vi, int s, int track, int page, uint32_t flags, const float* p16, uint8_t* fb) {
+  rmp_draw_fn f = vi >= 0 && vi < core::kVoices ? draw_fn(s) : nullptr;
+  if (!f || !fb) return 0;
+  float p[RMP_PARAMS + RMP_PARAMS_HI];
+  for (int k = 0; k < RMP_PARAMS; ++k) p[k] = p16 ? p16[k] : 0.0f;
+  hi_values(vi, s, p + RMP_PARAMS);
+  memset(fb, 0, RMP_DRAW_BYTES);
+  void* st = g_cur[vi] == s ? g_vstate[vi] : nullptr;
+  int32_t r = 0;
+  VNow now(vi);
+  if (!gcall(s, "draw", [&] { r = f(st, page, flags, track, p, fb); }, kDrawLateUs)) return 0;
+  return r == 1 ? 1 : 0;
+}
+
 // The voices' values follow their machine: a voice on a READY slot whose values are another machine's (or none: a kit
 // file without UMX lines for it) takes this one's manifest defaults. Not saved (the defaults come back from the
 // manifest; a turn marks the kit's file). A voice on a built-in machine keeps what it held.
@@ -2920,11 +2956,12 @@ void fx_faults() {
 uint32_t host_caps() {
   return RMP3_CAP_TRANSPORT | RMP3_CAP_STEREO | RMP3_CAP_EFFECT | (ex && ex->guard ? (uint32_t)RMP3_CAP_GUARD : 0u) |
          (g_pool_bytes ? (uint32_t)RMP3_CAP_ARENA : 0u) | RMP3_CAP_FX_P16 |   // (sendfx-pages: fx_run's p[4..15])
-         RMP3_CAP_UM_P32;   // (0.5.0-pages: a machine's params_hi, P17..P32)
+         RMP3_CAP_UM_P32 |   // (0.5.0-pages: a machine's params_hi, P17..P32)
+         RMP3_CAP_DRAW;      // (plugin-drawn screens: rmp_plugin's draw)
 }
 void caps_names(uint32_t c, char* b, int cap) {
   static const char* const kN[] = {"transport", "arena", "guard", "stereo", "audio in", "effects", "signal bus", "block params", "pages",
-                                   "effect P5..P16", "machine P17..P32"};
+                                   "effect P5..P16", "machine P17..P32", "draw"};
   b[0] = 0;
   int n = 0;
   for (int k = 0; k < (int)(sizeof kN / sizeof kN[0]); ++k)
@@ -2940,6 +2977,7 @@ bool v3_check(const rmp_plugin* p, const uint8_t* code, uint32_t bytes, const rm
   const void* r = p->api >= 2u ? p->reserved[RMP_P_V3] : nullptr;
   // 0.5.0-pages: params_hi (reserved[RMP_P_PARAMS_HI]) inside the code, for an API 2 plugin too (NULL: none)
   if (!fn_ok((const void*)rmp_params_hi_of(p))) { copy(why, "its params_hi is outside its code", cap); return false; }
+  if (!fn_ok((const void*)rmp_draw_of(p))) { copy(why, "its draw is outside its code", cap); return false; }   // (and draw)
   if (!r) {
     if (p->api >= RMP_API3) { copy(why, "an API 3 table without its rmp3_plugin", cap); return false; }
     return true;   // a plain API 1 / 2 plugin: as before
@@ -3674,6 +3712,8 @@ void begin(const Exec* e, const char* d) {
   core::hooks.user_note_off = on_note_off;
   core::hooks.user_label = on_label;
   core::hooks.user_value_text = on_value_text;   // 0.5.0-pages: stepped knobs
+  core::hooks.user_draw_key = on_draw_key;       // plugin-drawn screens (rmp_api.h RMP_P_DRAW)
+  core::hooks.user_draw = on_draw;
   core::hooks.slot_pages = on_pages;
   core::hooks.slot_hello = on_hello;
   for (int8_t& x : g_hi_sent_slot) x = -1;
@@ -3696,9 +3736,12 @@ void begin(const Exec* e, const char* d) {
   g_scan_at = core::now_ms();   // (not the 0 it starts as: now_ms() - 0 reads as in the future after 24.8 days of uptime)
 #endif
   g_scan = 1;
+  char caps[160];
+  caps_names(g_h3.caps, caps, sizeof caps);
   core::log("um: user machines from %s (code arena %u KB, %u KB state a voice; API 3: arena pool %u KB, %s)", g_dir,
             (unsigned)(e->total >> 10), (unsigned)(kStateMax >> 10), (unsigned)(g_pool_bytes >> 10),
             e->guard ? "guarded calls" : "calls not guarded");
+  core::log("um: API 3 host caps: %s", caps);
 }
 
 bool idle() {
