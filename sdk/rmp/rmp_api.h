@@ -16,6 +16,40 @@ extern "C" {
                                           a plugin built against this header still writes .api = 2u (RMP_API) */
 #define RMP_PLUGIN_MAGIC 0x504D5252u   /* "RRMP" little-endian */
 #define RMP_PARAMS 16                  /* P1..P16: SRC page P1..P8, SMPL page P9..P16 */
+#define RMP_PARAMS_HI 16               /* P17..P32 (params_hi): SRC's second page P17..P24, SMPL's P25..P32 */
+
+/* A stepped knob (the manifest's "steps", docs/plugins.md section 3): a P1..P16 knob whose 14-bit value
+   v14 = value * 128 + fraction (0..RMP_STEP_V14_MAX: 0.0 .. 127.0; the Rytm's 127 + 127/128 = 16383 reads as the
+   last entry) picks one of `steps` entries (2..RMP_STEPS_MAX), one entry per Rytm detent. Defined once, here, for
+   the packer (tools/rmp_pack.py step_v14 / step_entry), the hosts and plugins alike; integer, rounding:
+     v14(q) = (q * 16256 + (steps - 1) / 2) / (steps - 1)      entry q's value (0 -> 0, steps - 1 -> 16256)
+     q(v14) = min((v14 * (steps - 1) + 8128) / 16256, steps - 1)
+   Every entry round-trips (q(v14(q)) == q: an entry is at least one 14-bit step wide, so rounding there and back
+   errs by under half an entry), and q(v) is monotonic in v. The products stay under 2^31 (16383 x 16255). */
+#define RMP_STEP_V14_MAX 16256u        /* 127.0 in 1/128 */
+#define RMP_STEPS_MAX 16256u           /* entries at most: one per 14-bit step of 0..127.0 */
+/* Entry q's 14-bit value (q above steps - 1: the last entry's; steps under 2: 0). */
+static inline uint32_t rmp_step_v14(uint32_t steps, uint32_t q) {
+  if (steps < 2u) return 0u;
+  if (steps > RMP_STEPS_MAX) steps = RMP_STEPS_MAX;
+  if (q > steps - 1u) q = steps - 1u;
+  return (q * RMP_STEP_V14_MAX + (steps - 1u) / 2u) / (steps - 1u);
+}
+/* The entry a 14-bit value means (0..steps - 1; values above RMP_STEP_V14_MAX are the last entry). */
+static inline uint32_t rmp_step_entry(uint32_t steps, uint32_t v14) {
+  if (steps < 2u) return 0u;
+  if (steps > RMP_STEPS_MAX) steps = RMP_STEPS_MAX;
+  if (v14 > 16383u) v14 = 16383u;
+  uint32_t q = (v14 * (steps - 1u) + RMP_STEP_V14_MAX / 2u) / RMP_STEP_V14_MAX;
+  return q > steps - 1u ? steps - 1u : q;
+}
+/* The entry a params() value p[k] (value + fraction / 128) means: v14 = p * 128 (exact for such values; rounded to
+   nearest otherwise), NaN and negatives entry 0. A plugin reads its stepped knob with this. */
+static inline uint32_t rmp_step_entry_of(uint32_t steps, float value) {
+  float v = value * 128.0f + 0.5f;
+  uint32_t v14 = v >= 1.0f ? (v < 16383.0f ? (uint32_t)v : 16383u) : 0u;   /* (NaN fails v >= 1: 0) */
+  return rmp_step_entry(steps, v14);
+}
 
 /* API 2: a pool sample, as pool_info reports it. */
 typedef struct rmp_pool_info {
@@ -78,18 +112,33 @@ typedef struct rmp_plugin {
      [RMP_P_VOICE_ENTER] void voice_enter(void *state): after voice_init, each time a voice starts this slot
      [RMP_P_VOICE_LEAVE] void voice_leave(void *state): before the voice leaves this slot or it unloads
      [RMP_P_V3 = 4] API 3 (rmp_api3.h): const rmp3_plugin *, NULL = a plain API 2 plugin
-     [5..7] later APIs, NULL */
+     [RMP_P_PARAMS_HI = 5] void params_hi(void *state, const float *p): p[0..15] = P17..P32 (RMP_PARAMS_HI), the same
+                         convention as params() (0..127 + fraction/128; the host holds them per track: they are no
+                         Rytm sound words and not p-lockable). Called like params(): on the control core between
+                         render calls, all 16 values, at least once after voice_init (and voice_enter) before the
+                         voice renders, then whenever one changes; every state of the track (its poly instances, a
+                         unison stack) gets them. The manifest's "knobs_hi" describes them (docs/plugins.md section 3;
+                         a P without a knob gets 0). An older host never calls it: start P17..P32 at the manifest's
+                         defaults in voice_init. API 2 and API 3 machines alike (an API 3 machine also learns it
+                         from rmp3_host.caps RMP3_CAP_UM_P32). Effects: not called (their P5..P16 are
+                         RMP3_CAP_FX_P16's). (RMP_API stays 2: the slot was reserved and NULL in every table, a NULL
+                         one means "no P17..P32", and a host from before it never reads reserved[5], so a plugin that
+                         fills it loads and plays everywhere; a new number would make older hosts refuse it.
+                         reserved[4] is RMP_P_V3's, so params_hi is reserved[5].)
+     [6..7] later APIs, NULL */
   void *reserved[8];
 } rmp_plugin;
 #define RMP_P_PARSE 0
 #define RMP_P_LOAD_ENTRY 1
 #define RMP_P_VOICE_ENTER 2
 #define RMP_P_VOICE_LEAVE 3
+#define RMP_P_PARAMS_HI 5
 
 /* A function in a reserved slot of a table: RMP_FN(load_entry). */
 #define RMP_FN(f) ((void *)(f))
 typedef int32_t (*rmp_load_entry_fn)(void *state, const uint8_t *bytes, int32_t len, int16_t values[16]);
 typedef void (*rmp_voice_fn)(void *state);
+typedef void (*rmp_params_fn)(void *state, const float *p);
 typedef int32_t (*rmp_pool_info_fn)(int32_t slot, rmp_pool_info *info);
 typedef int32_t (*rmp_pool_read_fn)(int32_t slot, uint32_t pos, float *buf, int32_t n);
 /* The host reads a plugin's API-2 functions only through these (NULL for an API-1 plugin). */
@@ -101,6 +150,9 @@ static inline rmp_voice_fn rmp_voice_enter_of(const rmp_plugin *p) {
 }
 static inline rmp_voice_fn rmp_voice_leave_of(const rmp_plugin *p) {
   return p->api >= 2u ? (rmp_voice_fn)p->reserved[RMP_P_VOICE_LEAVE] : (rmp_voice_fn)0;
+}
+static inline rmp_params_fn rmp_params_hi_of(const rmp_plugin *p) {
+  return p->api >= 2u ? (rmp_params_fn)p->reserved[RMP_P_PARAMS_HI] : (rmp_params_fn)0;
 }
 /* A plugin reads the host's API-2 functions only through these (NULL from an API-1 host table). */
 static inline rmp_pool_info_fn rmp_pool_info_of(const rmp_host *h) {

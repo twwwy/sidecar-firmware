@@ -8,6 +8,7 @@
 #include "../../sdk/rmp/rmp_api3.h"
 static int32_t le(void *st, const uint8_t *b, int32_t n, int16_t v[16]) { (void)st; (void)b; (void)n; (void)v; return 0; }
 static void ve(void *st) { (void)st; }
+static void ph(void *st, const float *p) { (void)st; (void)p; }
 int main(void) {
   assert(offsetof(rmp_plugin, magic) == 0);
   assert(offsetof(rmp_plugin, api) == 4);
@@ -17,6 +18,7 @@ int main(void) {
   assert(offsetof(rmp_host, api) == 0);
   assert(RMP_API == 2u && RMP_API_MIN == 1u);
   assert(RMP_P_PARSE == 0 && RMP_P_LOAD_ENTRY == 1 && RMP_P_VOICE_ENTER == 2 && RMP_P_VOICE_LEAVE == 3);
+  assert(RMP_P_PARAMS_HI == 5 && RMP_PARAMS_HI == 16 && RMP_P_V3 == 4);
   assert(RMP_H_POOL_INFO == 0 && RMP_H_POOL_READ == 1);
   assert(sizeof(rmp_pool_info) == 20 && offsetof(rmp_pool_info, head_frames) == 16);
   /* the accessors: a v1 table has no v2 functions, a v2 table the ones it fills */
@@ -24,6 +26,17 @@ int main(void) {
   assert(rmp_load_entry_of(&p) == 0 && rmp_voice_enter_of(&p) == 0 && rmp_voice_leave_of(&p) == 0);
   p.api = 2u;
   assert(rmp_load_entry_of(&p) == le && rmp_voice_enter_of(&p) == ve && rmp_voice_leave_of(&p) == ve);
+  /* params_hi (reserved[4]): NULL in a table without it, never read from an API-1 table */
+  assert(rmp_params_hi_of(&p) == 0);
+  p.reserved[RMP_P_PARAMS_HI] = RMP_FN(ph);
+  assert(rmp_params_hi_of(&p) == ph);
+  p.api = 1u;
+  assert(rmp_params_hi_of(&p) == 0);
+  p.api = 2u;
+  /* stepped knobs: the ends, a round trip, a params() value */
+  assert(rmp_step_v14(361, 0) == 0 && rmp_step_v14(361, 360) == RMP_STEP_V14_MAX && rmp_step_entry(361, 16383) == 360);
+  for (uint32_t q = 0; q < 361; ++q) assert(rmp_step_entry(361, rmp_step_v14(361, q)) == q);
+  assert(rmp_step_entry_of(361, 63.5f) == 180 && rmp_step_entry_of(2, 127.0f) == 1 && rmp_step_entry_of(2, 0.0f) == 0);
   rmp_host h = {1u, 48000.0f, 12, 0, 0, {0}};
   assert(rmp_pool_info_of(&h) == 0 && rmp_pool_read_of(&h) == 0);
   /* API 3: discovery through the reserved slots, the tables' field offsets (64-bit) */

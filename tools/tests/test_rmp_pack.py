@@ -204,6 +204,183 @@ class Labels(unittest.TestCase):
         self.assertIn("limit is 32", str(cm.exception))
 
 
+def _with_image(m):
+    """A package that rmp_verify_header_any takes: a 72-byte zero image (the entry table's room) around manifest m."""
+    man, ver, compat = rmp_pack._manifest(m)
+    body = b"\0" * rmp_pack.RMP_PLUGIN_BYTES + man
+    body += b"\0" * (-len(body) % 4)
+    f = [0x31504D52, rmp_pack.package_format(m), 2, m["id"].encode(), ver, compat, rmp_pack.RMP_PLUGIN_BYTES, 0, 0, 0,
+         len(man), 0, zlib.crc32(body) & 0xFFFFFFFF, b"\0" * 20]
+    return struct.pack(rmp_pack.HEADER_FMT, *f) + body
+
+
+PAIR19 = [f"B{i + 1}" for i in range(19)]
+# The package extras/manifest_test.cpp checks given as argv[2] (PagesC): keep the two in step.
+FIXTURE = {"id": "rytm.pages_test", "version": "1.0.0", "name": "PAGES", "short": "PG", "page2": "params",
+           "knobs": [{"p": 1, "long": "Algo", "short": "ALG", "steps": 361, "text": "pair", "pair_names": PAIR19,
+                      "default14": 8128},
+                     {"p": 2, "long": "Fine", "short": "FIN", "steps": 100, "default": 10},
+                     {"p": 3, "long": "Level", "short": "LEV", "look": "fader"},
+                     {"p": 9, "long": "Type", "short": "TYPE", "look": "list", "text": "enum", "names": ["BD", "SD"]}],
+           "knobs_hi": [{"p": 25, "long": "Wave", "short": "WAV", "look": "list", "text": "enum",
+                         "names": ["Sine", "Tri", "Saw"], "default": 0},
+                        {"p": 17, "long": "Ratio", "short": "RAT", "min": 1, "max": 20, "default": 3}],
+           "page3_title": "OPERATORS", "page4_title": "ENVELOPES",
+           "type_labels": {"knob": 9, "params": [3], "sets": [[["Level", "LEV"]], [["Snap", "SNAP"]]]}}
+
+
+class Pages(unittest.TestCase):
+    """0.5.0-pages: pages 3 and 4 (P17..P32, "knobs_hi", the titles) and stepped knobs ("steps", text "pair"), the RPG1
+    block after the name table and before an RLB block; the package stays format 3 and an older host reads it as
+    before."""
+
+    def test_step_mapping(self):
+        for n in (2, 3, 100, 361, 16255, 16256):
+            self.assertEqual((rmp_pack.step_v14(n, 0), rmp_pack.step_v14(n, n - 1)), (0, 16256))
+            self.assertEqual([rmp_pack.step_entry(n, rmp_pack.step_v14(n, q)) for q in range(n)], list(range(n)))
+            es = [rmp_pack.step_entry(n, v) for v in range(16384)]
+            self.assertTrue(all(0 <= b - a <= 1 for a, b in zip(es, es[1:])) and es[-1] == n - 1)
+        self.assertEqual((rmp_pack.step_v14(361, 180), rmp_pack.step_entry(361, 8128)), (8128, 180))
+        # the same numbers as rmp_api.h's (one C definition, compiled here)
+        src = r"""#include <stdio.h>
+#include "rmp_format.h"
+#include "rmp_api.h"
+int main(void) {
+  unsigned ns[] = {2, 3, 100, 361, 16256};
+  for (int i = 0; i < 5; ++i)
+    for (unsigned v = 0; v < 16384; v += 37) printf("%u %u ", rmp_step_entry(ns[i], v), rmp_step_v14(ns[i], v % ns[i]));
+  printf("%zu %u %u %d %d %d %d %d %d\n", sizeof(rmp_step), (unsigned)RMP_PAGES_MAGIC, RMP_PAGES_HEAD, RMP_PAGES_KNOBS,
+         RMP_PAGES_STEPS, RMP_PAGES_NAMES, RMP_STEP_PAIR, (int)RMP_STEPS_MAX, (int)RMP_STEP_V14_MAX);
+  return 0;
+}"""
+        with tempfile.TemporaryDirectory() as d:
+            c, exe = os.path.join(d, "s.c"), os.path.join(d, "s")
+            with open(c, "w") as f:
+                f.write(src)
+            subprocess.run(["cc", "-std=c11", "-Wall", "-I", FMT_DIR, c, "-o", exe], check=True)
+            got = [int(x) for x in subprocess.run([exe], check=True, capture_output=True, text=True).stdout.split()]
+        want = []
+        for n in (2, 3, 100, 361, 16256):
+            for v in range(0, 16384, 37):
+                want += [rmp_pack.step_entry(n, v), rmp_pack.step_v14(n, v % n)]
+        self.assertEqual(got[:len(want)], want)
+        self.assertEqual(got[len(want):], [8, rmp_pack.PAGES_MAGIC, rmp_pack.PAGES_HEAD, rmp_pack.PAGES_KNOBS, 16,
+                                           rmp_pack.PAGES_NAMES, rmp_pack.STEP["pair"], rmp_pack.STEPS_MAX,
+                                           rmp_pack.STEP_V14_MAX])
+
+    def test_round_trip(self):
+        m = json.loads(json.dumps(FIXTURE))
+        rmp = fake(m)
+        self.assertEqual(rmp_pack.package_format(m), 3)
+        pg = rmp_pack.parse_pages(rmp)
+        self.assertEqual((pg["page3_title"], pg["page4_title"]), ("OPERATORS", "ENVELOPES"))
+        self.assertEqual([(k["p"], k["long"], k["short"], k["min"], k["max"], k["default"], k.get("names"))
+                          for k in pg["knobs_hi"]],
+                         [(17, "Ratio", "RAT", 1, 20, 3, None), (25, "Wave", "WAV", 0, 127, 0, ["Sine", "Tri", "Saw"])])
+        self.assertEqual(pg["knobs_hi"][1]["look"], rmp_pack.LOOK["list"])
+        self.assertEqual(pg["steps"], {1: dict(steps=361, kind=1, default14=8128, pair_names=PAIR19),
+                                       2: dict(steps=100, kind=0, default14=rmp_pack.step_v14(100, rmp_pack.step_entry(100, 10 << 7)))})
+        self.assertEqual(rmp_pack.parse_labels(rmp), m["type_labels"])   # the RLB block still last, still found
+        h = rmp_pack.parse_header(rmp)
+        end = 96 + h["image_size"] + 8 * h["reloc_count"] + h["manifest_size"]
+        self.assertEqual(rmp[end - 4:end], b"RLB1")
+        # an older host's reading: the manifest as without the new keys (the pair knob a number, default14 >> 7)
+        k = rmp_pack.parse_manifest(rmp)["knobs"]
+        self.assertEqual([(x["p"], x["text"], x["default"]) for x in k], [(1, 0, 63), (2, 0, 10), (3, 0, 64), (9, 2, 64)])
+        old = json.loads(json.dumps(m))
+        for key in ("knobs_hi", "page3_title", "page4_title"):
+            del old[key]
+        for x in old["knobs"]:
+            for key in ("steps", "pair_names", "default14"):
+                x.pop(key, None)
+            if x.get("text") == "pair":
+                x["text"], x["default"] = "number", 63
+        self.assertEqual(rmp_pack.parse_manifest(rmp), rmp_pack.parse_manifest(fake(old)))
+        self.assertIsNone(rmp_pack.parse_pages(fake(old)))
+        self.assertEqual(rmp_pack.parse_labels(fake(old)), m["type_labels"])
+        # the block's size: head, 2 hi knobs, 2 steps, 3 + 19 names, the footer
+        self.assertEqual(h["manifest_size"] - rmp_pack.parse_header(fake(old))["manifest_size"], 30 + 2 * 26 + 2 * 8 + 22 * 8 + 6)
+        # only the pages block (no type_labels): the RLB reader at the end finds none
+        m2 = json.loads(json.dumps(m)); del m2["type_labels"]
+        r2 = fake(m2)
+        self.assertIsNone(rmp_pack.parse_labels(r2))
+        self.assertEqual(rmp_pack.parse_pages(r2), pg)
+        # a title alone is a block; a knob default14 at an entry's value is kept, another snapped to its entry's
+        r3 = rmp_pack.parse_pages(fake(dict(SINE, page4_title="X")))
+        self.assertEqual((r3["page3_title"], r3["page4_title"], r3["knobs_hi"], r3["steps"]), ("", "X", [], {}))
+        m4 = json.loads(json.dumps(SINE)); m4["knobs"][1].update(steps=3, default14=5000)
+        self.assertEqual(rmp_pack.parse_pages(fake(m4))["steps"][2]["default14"], 8128)
+        self.assertEqual(rmp_pack.parse_manifest(fake(m4))["knobs"][1]["default"], 5000 >> 7)
+        # a hi list over 16 names stays format 3 (the Rytm never shows them); with an RLB2 block format 4, both blocks chained
+        m5 = json.loads(json.dumps(m)); m5["knobs_hi"][0]["names"] = [f"W{i}" for i in range(36)]
+        self.assertEqual(rmp_pack.package_format(m5), 3)
+        self.assertEqual(len(rmp_pack.parse_pages(fake(m5))["knobs_hi"][1]["names"]), 36)
+        m5["type_labels"] = dict(knob=9, follows=10, lists=[["BD", "SD"], ["X"]], params=[3], sets=[[None]] * 3)
+        m5["knobs"].append(dict(p=10, long="Eng", short="ENG", look="list", text="enum", names=["A", "B"]))
+        r5 = fake(m5)
+        self.assertEqual(rmp_pack.package_format(m5), 4)
+        self.assertEqual((rmp_pack.parse_pages(r5)["page3_title"], rmp_pack.parse_labels(r5)["follows"]), ("OPERATORS", 10))
+
+    def test_refused(self):
+        def bad(change, text):
+            mm = json.loads(json.dumps(FIXTURE))
+            change(mm)
+            with self.assertRaises(rmp_pack.PackError) as cm:
+                rmp_pack._manifest(mm)
+            self.assertIn(text, str(cm.exception))
+        hi = lambda **kw: (lambda mm: mm["knobs_hi"][0].update(kw))
+        k1 = lambda **kw: (lambda mm: mm["knobs"][0].update(kw))
+        k2 = lambda **kw: (lambda mm: mm["knobs"][1].update(kw))
+        cases = [
+            (hi(p=16), "17..32"), (hi(p=33), "17..32"), (hi(p=True), "17..32"), (hi(p=17), "used twice"),
+            (hi(role="preset"), "'free' only"), (hi(text="preset"), "text"), (hi(steps=4), "unknown key"),
+            (hi(colour=1), "unknown key"), (hi(long="L" * 13), "limit is 12"), (hi(names=[]), "1..36 names"),
+            (hi(look="dial"), "only for look 'list'"), (hi(default=200), "0..127"),
+            (lambda mm: mm["knobs_hi"].__setitem__(1, {"p": 25, "long": "X"}), "missing required key 'short'"),
+            (lambda mm: mm.update(knobs_hi=[dict(FIXTURE["knobs_hi"][0], p=17 + i) for i in range(17)]), "at most 16"),
+            (lambda mm: mm.update(knobs_hi={"p": 17}), "at most 16"),
+            (lambda mm: mm.update(page3_title="T" * 14), "limit is 13"),
+            (lambda mm: mm.update(page4_title="T" * 14), "limit is 13"),
+            (lambda mm: mm.update(page5_title="X"), "unknown key"),
+            (k1(steps=360), "must be 19 x 19 = 361"), (k1(pair_names=PAIR19[:1], steps=1), "2..16256"),
+            (k1(pair_names=["A"], steps=4), "2..36 names"), (k1(pair_names=["A"] * 37, steps=37 * 37), "2..36 names"),
+            (k1(pair_names=["EIGHTCHR", "B"], steps=4), "limit is 7"), (k1(pair_names=["", "B"], steps=4), "must not be empty"),
+            (k1(default=3), "not both"), (k1(default14=16257), "0..16256"), (k1(min=10, default14=1000), "outside 1280..16256"),
+            (k2(steps=16257), "2..16256"), (k2(steps=1), "2..16256"), (k2(steps="9"), "2..16256"),
+            (k2(pair_names=["A", "B"]), "only for text 'pair'"), (k2(look="list"), "not for look 'list'"),
+            (k2(text="pool"), "not for text 'pool'"),
+            (lambda mm: mm["knobs"][2].update(default14=5), "only for a knob with 'steps'"),
+            (lambda mm: mm["knobs"][2].update(pair_names=["A", "B"]), "only for a knob with 'steps'"),
+            (lambda mm: mm["knobs"][2].update(text="pair"), "needs 'steps'"),
+            (lambda mm: mm["knobs_hi"][0].update(text="pair"), "text"),
+            (lambda mm: [mm["knobs_hi"].append(dict(FIXTURE["knobs_hi"][0], p=18 + i, names=["n"] * 36)) for i in range(7)],
+             "names in all, the limit is 255"),
+        ]
+        for change, text in cases:
+            with self.subTest(text=text):
+                bad(change, text)
+
+
+class PagesC(unittest.TestCase):
+    """extras/manifest_test.cpp against the packer's output: FIXTURE packed (both blocks, chained), read by the C
+    reader (rmp_manifest_pages, rmp_manifest_labels); its hand-made blocks and the mapping run in the same binary. The
+    sine_test package is passed when it is built (else "-": no ARM toolchain)."""
+
+    def test_c_reader(self):
+        ext = os.path.join(FMT_DIR, "..", "extras")
+        sine = os.path.join(PLUG, "sine_test.rmp")
+        with tempfile.TemporaryDirectory() as d:
+            exe, pkg = os.path.join(d, "manifest_test"), os.path.join(d, "pages.rmp")
+            subprocess.run(["c++", "-std=c++17", "-O1", "-Wall", "-I", FMT_DIR, os.path.join(ext, "manifest_test.cpp"),
+                            os.path.join(FMT_DIR, "rmp_manifest.cpp"), os.path.join(FMT_DIR, "rmp_loader.cpp"), "-o", exe],
+                           check=True)
+            with open(pkg, "wb") as f:
+                f.write(_with_image(FIXTURE))
+            r = subprocess.run([exe, sine if os.path.exists(sine) else "-", pkg], cwd=ext, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertIn("packer output", r.stdout)
+
+
 def _armbin():
     """The newest installed Teensyduino compiler (versions compared numerically), else the one this was written with."""
     import glob

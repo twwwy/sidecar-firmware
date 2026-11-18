@@ -219,6 +219,143 @@ RMP_COLD int rmp_labels_enum(const rmp_labels *l, int set, int p, char names[RMP
   return l->count[v];
 }
 
+// The appended block with this magic (rmp_format.h: blocks chain back from the manifest's end, [body][u16 len][magic],
+// through the known magics only, never into the name table): its body's package offset and length; false none.
+RMP_COLD static bool find_block(const rmp_desc *d, rmp_read_fn rd, void *ctx, uint32_t want, uint32_t *at, uint32_t *len) {
+  if (!d || d->format < 3 || !d->names_at || d->names_end < d->names_at) return false;
+  uint32_t names = 0;   // the name table's end: the blocks start after the last name a knob uses
+  for (int j = 0; j < d->nknobs; ++j) {
+    uint32_t e = 8u * ((uint32_t)d->knob[j].enum_first + d->knob[j].enum_count);
+    if (e > names) names = e;
+  }
+  uint32_t lo = d->names_at + names, end = d->names_end;
+  if (end < lo) return false;
+  for (int hops = 0; hops < 3 && end - lo >= RMP_LABELS_FOOTER; ++hops) {   // (one of each known magic at most)
+    uint8_t f[RMP_LABELS_FOOTER];
+    if (!rd(ctx, end - RMP_LABELS_FOOTER, f, RMP_LABELS_FOOTER)) return false;
+    uint32_t magic, n = (uint32_t)f[0] | (uint32_t)f[1] << 8;
+    memcpy(&magic, f + 2, 4);
+    if ((magic != RMP_LABELS_MAGIC && magic != RMP_LABELS_MAGIC2 && magic != RMP_PAGES_MAGIC) ||
+        n > end - RMP_LABELS_FOOTER - lo)
+      return false;
+    end -= RMP_LABELS_FOOTER + n;
+    if (magic == want) { *at = end, *len = n; return true; }
+  }
+  return false;
+}
+
+RMP_COLD int rmp_pages_find(const rmp_pages *pg, int p) {
+  for (int j = 0; pg && j < pg->nhi; ++j)
+    if (pg->hi[j].p == p) return j;
+  return -1;
+}
+
+RMP_COLD const rmp_step_desc *rmp_pages_step(const rmp_pages *pg, int p) {
+  for (int j = 0; pg && j < pg->nstep; ++j)
+    if (pg->step[j].p == p) return &pg->step[j];
+  return nullptr;
+}
+
+RMP_COLD bool rmp_manifest_pages(const rmp_info *info, rmp_read_fn rd, void *ctx, const rmp_desc *d, rmp_pages *out) {
+  (void)info;   // (d holds the manifest's place; info for symmetry with rmp_manifest_labels)
+  memset(out, 0, sizeof *out);
+  uint32_t at, len;
+  if (!find_block(d, rd, ctx, RMP_PAGES_MAGIC, &at, &len) || len < RMP_PAGES_HEAD) return false;
+  uint8_t h[RMP_PAGES_HEAD];
+  if (!rd(ctx, at, h, RMP_PAGES_HEAD)) return false;
+  uint32_t nhi = h[0], nst = h[1], nn = h[2];
+  if (nhi > RMP_PAGES_KNOBS || nst > RMP_PAGES_STEPS ||
+      len != RMP_PAGES_HEAD + 26u * nhi + 8u * nst + (uint32_t)RMP_ENUM_NAME_BYTES * nn)
+    return false;
+  rmp_pages pg;   // (filled aside: a failing read leaves out all zero)
+  memset(&pg, 0, sizeof pg);
+  clean(pg.p3_title, h + 4, RMP_PAGES_TITLE_BYTES);
+  clean(pg.p4_title, h + 4 + RMP_PAGES_TITLE_BYTES, RMP_PAGES_TITLE_BYTES);
+  pg.names_at = at + RMP_PAGES_HEAD + 26u * nhi + 8u * nst;
+  pg.nnames = (uint16_t)nn;
+  for (uint32_t i = 0; i < nhi; ++i) {
+    uint8_t k[26];
+    if (!rd(ctx, at + RMP_PAGES_HEAD + 26u * i, k, 26)) return false;
+    rmp_desc_knob q;
+    memset(&q, 0, sizeof q);
+    q.p = k[0];
+    q.look = k[1] <= RMP_LOOK_LIST ? k[1] : RMP_LOOK_DIAL;
+    q.kind = k[2] <= RMP_TEXT_POOL && k[2] != RMP_TEXT_PRESET ? k[2] : RMP_TEXT_NUMBER;
+    q.role = RMP_ROLE_FREE;
+    q.min = 0; q.max = 127; q.def = 64;
+    uint8_t lo = sat127(k[6]), hi = sat127(k[7]), df = sat127(k[8]);
+    if (lo <= hi) { q.min = lo; q.max = hi; q.def = df < lo ? lo : df > hi ? hi : df; }
+    if (k[4] && k[4] <= RMP_ENUM_MAX && (uint32_t)k[3] + k[4] <= nn) { q.enum_first = k[3]; q.enum_count = k[4]; }
+    clean(q.long_name, k + 10, 12);
+    clean(q.short_name, k + 22, 4);
+    if (q.p < RMP_PAGES_P_FIRST || q.p > RMP_PAGES_P_LAST || rmp_pages_find(&pg, q.p) >= 0) continue;
+    int j = pg.nhi++;
+    while (j > 0 && pg.hi[j - 1].p > q.p) { pg.hi[j] = pg.hi[j - 1]; --j; }   // keep p order
+    pg.hi[j] = q;
+  }
+  for (uint32_t i = 0; i < nst; ++i) {
+    uint8_t b[8];
+    if (!rd(ctx, at + RMP_PAGES_HEAD + 26u * nhi + 8u * i, b, 8)) return false;
+    rmp_step_desc s;
+    s.p = b[0], s.kind = b[1];
+    s.steps = (uint16_t)(b[2] | b[3] << 8);
+    uint32_t d14 = (uint32_t)b[4] | (uint32_t)b[5] << 8;
+    s.def14 = (uint16_t)(d14 > RMP_STEP_V14_MAX ? RMP_STEP_V14_MAX : d14);
+    s.name_first = b[6], s.name_count = b[7];
+    bool ok = s.p >= 1 && s.p <= 16 && rmp_desc_find(d, s.p) >= 0 && !rmp_pages_step(&pg, s.p) &&
+              s.steps >= 2 && s.steps <= RMP_STEPS_MAX;
+    if (s.kind == RMP_STEP_PAIR)
+      ok = ok && s.name_count >= 2 && s.name_count <= RMP_ENUM_MAX && (uint32_t)s.name_first + s.name_count <= nn &&
+           s.steps == (uint32_t)s.name_count * s.name_count;
+    else
+      ok = ok && s.kind == RMP_STEP_NUMBER && !s.name_count && !s.name_first;
+    if (!ok) continue;
+    int j = pg.nstep++;
+    while (j > 0 && pg.step[j - 1].p > s.p) { pg.step[j] = pg.step[j - 1]; --j; }   // keep p order
+    pg.step[j] = s;
+  }
+  pg.present = 1;
+  *out = pg;
+  return true;
+}
+
+// n names of the pages block's table from entry first, into names[][8] (as rmp_manifest_enum): n, -1 on a read error.
+RMP_COLD static int block_names(const rmp_pages *pg, uint32_t first, uint32_t n, rmp_read_fn rd, void *ctx,
+                                char names[RMP_ENUM_MAX][8]) {
+  memset(names, 0, RMP_ENUM_MAX * 8);
+  if (!n) return 0;
+  if (n > RMP_ENUM_MAX || first + n > pg->nnames) return -1;
+  uint8_t b[RMP_ENUM_MAX * 8];
+  if (!rd(ctx, pg->names_at + 8u * first, b, 8u * n)) return -1;
+  for (uint32_t i = 0; i < n; ++i) clean(names[i], b + 8 * i, 7);   // the 8th byte is the terminator
+  return (int)n;
+}
+
+RMP_COLD int rmp_pages_enum(const rmp_pages *pg, int k, rmp_read_fn rd, void *ctx, char names[RMP_ENUM_MAX][8]) {
+  if (!pg || k < 0 || k >= pg->nhi) { memset(names, 0, RMP_ENUM_MAX * 8); return 0; }
+  return block_names(pg, pg->hi[k].enum_first, pg->hi[k].enum_count, rd, ctx, names);
+}
+
+RMP_COLD int rmp_pages_pair_names(const rmp_pages *pg, const rmp_step_desc *s, rmp_read_fn rd, void *ctx,
+                                  char names[RMP_ENUM_MAX][8]) {
+  if (!pg || !s || s->kind != RMP_STEP_PAIR) { memset(names, 0, RMP_ENUM_MAX * 8); return 0; }
+  return block_names(pg, s->name_first, s->name_count, rd, ctx, names);
+}
+
+RMP_COLD int rmp_step_pair_text(const char names[][8], int n, uint32_t q, char out[RMP_STEP_TEXT_BYTES]) {
+  out[0] = 0;
+  if (n < 1) return 0;
+  uint32_t nn = (uint32_t)n * (uint32_t)n;
+  if (q >= nn) q = nn - 1u;
+  const char *a = names[q / (uint32_t)n], *b = names[q % (uint32_t)n];
+  int len = 0;
+  for (int i = 0; i < 7 && a[i]; ++i) out[len++] = a[i];
+  out[len++] = ' '; out[len++] = '/'; out[len++] = ' ';
+  for (int i = 0; i < 7 && b[i]; ++i) out[len++] = b[i];
+  out[len] = 0;
+  return len;
+}
+
 RMP_COLD void rmp_desc_from_id(const char *id, rmp_desc *d) {
   memset(d, 0, sizeof *d);
   d->pre = -1;

@@ -96,6 +96,43 @@ typedef struct __attribute__((packed)) {
 #define RMP_LABELS_DEPS 16
 #define RMP_LABEL_BYTES 16
 #define RMP_LABELS_FOOTER 6
+/* Pages 3 and 4, and stepped knobs (0.5.0-pages): P17..P32 - SRC's second page P17..P24, SMPL's P25..P32, values the
+   host holds (no Rytm sound words, not p-lockable; the plugin gets them through rmp_plugin's params_hi,
+   RMP_P_PARAMS_HI) - and P1..P16 knobs whose 14-bit value picks one of N entries (rmp_api.h rmp_step_v14 /
+   rmp_step_entry). An optional block inside manifest_size after the name table, so the package stays format 3 (or
+   the 4 / 5 it is anyway): an older host never reads it, has no P17..P32 and plays a stepped knob as the 7-bit knob
+   its rmp_knob3 describes (give that a sensible look, text and default).
+   Appended blocks chain backwards from the manifest's end: each is [body][u16 length of the body, little-endian]
+   [magic], and the one before it ends where its body starts. A reader walks the footers from the end through the
+   magics it knows (RMP_LABELS_MAGIC, RMP_LABELS_MAGIC2, RMP_PAGES_MAGIC) and stops at any other, or at a length
+   that reaches into the name table. The packer writes the pages block FIRST and an RLB1 / RLB2 block, if any, LAST:
+   a reader from before the chain (rmp_manifest_labels looks at the end only) still finds its labels, and with only
+   a pages block it sees an unknown magic and takes none.
+   Layout (RMP_PAGES_*): nhi (0..RMP_PAGES_KNOBS), nstep (0..RMP_PAGES_STEPS), nnames (the block's own name table,
+   0..255), 0, page3_title[13], page4_title[13] (NUL-padded; "" = the host's default), then nhi rmp_knob3
+   (RMP_PAGES_HEAD bytes in: p 17..32 each once, role RMP_ROLE_FREE, text not RMP_TEXT_PRESET, enum_first /
+   enum_count into the block's name table, min / max / default 0..127 as any knob's), then nstep rmp_step (a P1..P16
+   knob of the manifest's, each once), then nnames names of RMP_ENUM_NAME_BYTES, then the footer "RPG1".
+   An rmp_step: p, kind (RMP_STEP_NUMBER: the host shows the entry 0..steps-1; RMP_STEP_PAIR: entry q is shown as
+   name[q / n] + " / " + name[q % n] of its n = name_count names, 2..RMP_ENUM_MAX, steps == n * n), steps
+   (2..RMP_STEPS_MAX), def14 (the default as a 14-bit value, 0..RMP_STEP_V14_MAX, the packer writes an entry's exact
+   rmp_step_v14), name_first, name_count (RMP_STEP_NUMBER: 0, 0). The knob's own rmp_knob3 keeps the 7-bit
+   fallback (text "number" for a pair knob; default def14 >> 7). tools/rmp_pack.py writes it from the manifest's
+   "knobs_hi", "page3_title", "page4_title" and the knobs' "steps", "pair_names", "default14"; rmp_manifest_pages
+   reads it. */
+#define RMP_PAGES_MAGIC 0x31475052u    /* "RPG1" little-endian */
+#define RMP_PAGES_HEAD 30u             /* nhi, nstep, nnames, 0, the two titles */
+#define RMP_PAGES_TITLE_BYTES 13
+#define RMP_PAGES_KNOBS 16             /* P17..P32 */
+#define RMP_PAGES_P_FIRST 17
+#define RMP_PAGES_P_LAST 32
+#define RMP_PAGES_STEPS 16             /* stepped knobs at most (P1..P16) */
+#define RMP_PAGES_NAMES 255            /* the block's name table at most */
+#define RMP_PAGES_FOOTER 6             /* = RMP_LABELS_FOOTER: u16 length, magic */
+enum { RMP_STEP_NUMBER = 0, RMP_STEP_PAIR = 1 };
+typedef struct __attribute__((packed)) {
+  uint8_t p, kind; uint16_t steps, def14; uint8_t name_first, name_count;
+} rmp_step;
 enum { RMP_LOOK_DIAL = 0, RMP_LOOK_CENTRED, RMP_LOOK_FADER, RMP_LOOK_LIST };
 enum { RMP_TEXT_NUMBER = 0, RMP_TEXT_BIPOLAR, RMP_TEXT_ENUM, RMP_TEXT_LIST, RMP_TEXT_NOTE, RMP_TEXT_TIME,
        RMP_TEXT_PRESET, RMP_TEXT_POOL };
@@ -115,7 +152,9 @@ _Static_assert(sizeof(rmp_knob) == 22, "rmp knob size");
 #ifdef __cplusplus
 static_assert(sizeof(rmp_knob3) == 26, "rmp knob3 size");
 static_assert(sizeof(rmp_manifest_head3) == 84, "rmp manifest head3 size");
+static_assert(sizeof(rmp_step) == 8, "rmp step size");
 #else
 _Static_assert(sizeof(rmp_knob3) == 26, "rmp knob3 size");
 _Static_assert(sizeof(rmp_manifest_head3) == 84, "rmp manifest head3 size");
+_Static_assert(sizeof(rmp_step) == 8, "rmp step size");
 #endif

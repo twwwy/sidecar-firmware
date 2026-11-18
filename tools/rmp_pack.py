@@ -378,7 +378,7 @@ def _ver(s):
     return a << 16 | b << 8 | c
 
 TOP_KEYS = {"id", "version", "compatible_from", "name", "short", "licence", "page2", "knobs", "page2_title", "preset_ext",
-            "max_voices", "pitch", "type_labels"}
+            "max_voices", "pitch", "type_labels", "knobs_hi", "page3_title", "page4_title"}
 # seqx (E0): the header's flags (rmp_format.h RMP_HF_*): "max_voices" 2..8 opts the machine into instancing (the host
 # runs that many states of it on one voice: a poly track, a unison stack - its state must hold everything render()
 # writes); "pitch" "note" (default: note_on's note is the pitch) or "none" (a fixed-pitch drum: the host sends 60).
@@ -393,7 +393,9 @@ def header_flags(m):
     if m.get("pitch", "note") == "none":
         f |= RMP_PITCH_NONE << RMP_HF_PITCH_SHIFT
     return f
-KNOB_KEYS = {"p", "long", "short", "look", "text", "names", "role", "min", "max", "default"}
+KNOB_KEYS = {"p", "long", "short", "look", "text", "names", "role", "min", "max", "default", "steps", "pair_names",
+             "default14"}
+HI_KNOB_KEYS = {"p", "long", "short", "look", "text", "names", "role", "min", "max", "default"}   # "knobs_hi"
 ENUM_NAME_BYTES, ENUM_MAX = 8, 36   # = RMP_ENUM_NAME_BYTES, RMP_ENUM_MAX in rmp_format.h
 KNOB1_BYTES, KNOB2_BYTES, KNOB_BYTES = 20, 22, 26   # a knob in formats 1, 2, 3 (rmp_knob, rmp_knob3)
 HEAD2_BYTES, HEAD_BYTES = 64, 84                    # the manifest head in formats 1/2, 3 (rmp_manifest_head3)
@@ -501,8 +503,9 @@ def _manifest(m):
         _str(k["long"], f"{w}.long", 12); _str(k["short"], f"{w}.short", 4)
         if k.get("look", "dial") not in LOOK:
             raise PackError(f"manifest {w}.look: {k['look']!r} not in {sorted(LOOK)}")
-        if k.get("text", "number") not in TEXT:
-            raise PackError(f"manifest {w}.text: {k['text']!r} not in {sorted(TEXT)}")
+        if k.get("text", "number") not in TEXT and k.get("text") != "pair":
+            raise PackError(f"manifest {w}.text: {k['text']!r} not in {sorted(TEXT) + ['pair']}")
+        _step(k, w)
         _knob_range(k, w)
         role = k.get("role", "free")
         if role not in ROLE:
@@ -524,7 +527,194 @@ def _manifest(m):
         raise PackError("manifest: at most one knob with text 'preset'")
     if total > 255:
         raise PackError(f"manifest: {total} enum names in all, the limit is 255")
-    return _manifest_bytes(m) + _labels_bytes(m), ver, compat
+    _pages(m)
+    # the pages block first, an RLB block last (rmp_format.h: a reader from before the chain looks at the end only)
+    return _manifest_bytes(m) + _pages_bytes(m) + _labels_bytes(m), ver, compat
+
+# Pages 3 and 4, and stepped knobs (rmp_format.h RMP_PAGES_*, "RPG1"; 0.5.0-pages). "knobs_hi": up to 16 knobs P17..P32
+# (SRC's second page P17..P24, SMPL's P25..P32), the knobs' fields with role "free" only and no "preset" text: values
+# the host holds and hands the plugin through params_hi (rmp_api.h RMP_P_PARAMS_HI). "page3_title", "page4_title": at
+# most 13 characters. Per P1..P16 knob "steps" (2..16256: one entry per Rytm detent of the 14-bit value 0..127.0),
+# text "pair" with "pair_names" (n of 2..36 names; steps == n * n; entry q reads pair_names[q // n] + " / " +
+# pair_names[q % n]) and "default14" (0..16256 instead of "default"). Packed after the name table, before an RLB block;
+# an older host never reads it. step_v14 / step_entry are rmp_api.h's rmp_step_v14 / rmp_step_entry.
+PAGES_MAGIC, PAGES_HEAD, PAGES_KNOBS, PAGES_NAMES, STEPS_MAX, STEP_V14_MAX = 0x31475052, 30, 16, 255, 16256, 16256
+STEP = {"number": 0, "pair": 1}   # = RMP_STEP_NUMBER, RMP_STEP_PAIR
+
+def step_v14(steps, q):
+    """Entry q's 14-bit value (rmp_step_v14)."""
+    q = min(max(q, 0), steps - 1)
+    return (q * STEP_V14_MAX + (steps - 1) // 2) // (steps - 1)
+
+def step_entry(steps, v14):
+    """The entry a 14-bit value means (rmp_step_entry)."""
+    v14 = min(max(v14, 0), 16383)
+    return min((v14 * (steps - 1) + STEP_V14_MAX // 2) // STEP_V14_MAX, steps - 1)
+
+def _int(v, what, lo, hi):
+    if isinstance(v, bool) or not isinstance(v, int) or not lo <= v <= hi:
+        raise PackError(f"manifest {what}: {v!r} is not an integer {lo}..{hi}")
+    return v
+
+def _step(k, w):
+    """A knob's steps: None (not stepped) or (steps, kind, pair_names, def14, the 7-bit default for older hosts)."""
+    pair = k.get("text") == "pair"
+    if "steps" not in k:
+        for key in ("pair_names", "default14"):
+            if key in k:
+                raise PackError(f"manifest {w}.{key}: only for a knob with 'steps'")
+        if pair:
+            raise PackError(f"manifest {w}.text: 'pair' needs 'steps' and 'pair_names'")
+        return None
+    steps = _int(k["steps"], f"{w}.steps", 2, STEPS_MAX)
+    if "names" in k or k.get("look") == "list":
+        raise PackError(f"manifest {w}.steps: not for look 'list' (its value is the entry, not a zone)")
+    if k.get("text") in ("preset", "pool"):
+        raise PackError(f"manifest {w}.steps: not for text {k['text']!r}")
+    names = None
+    if pair:
+        names = k.get("pair_names")
+        if not isinstance(names, list) or not 2 <= len(names) <= ENUM_MAX:
+            raise PackError(f"manifest {w}.pair_names: must be a list of 2..{ENUM_MAX} names")
+        for j, n in enumerate(names):
+            _str(n, f"{w}.pair_names[{j}]", ENUM_NAME_BYTES - 1)
+        if steps != len(names) ** 2:
+            raise PackError(f"manifest {w}.steps: {steps} with text 'pair' must be {len(names)} x {len(names)} = "
+                            f"{len(names) ** 2} (one entry per pair of pair_names)")
+    elif "pair_names" in k:
+        raise PackError(f"manifest {w}.pair_names: only for text 'pair'")
+    lo, hi = _int7(k.get("min", 0), f"{w}.min"), _int7(k.get("max", 127), f"{w}.max")
+    if "default14" in k:
+        if "default" in k:
+            raise PackError(f"manifest {w}: 'default' or 'default14', not both")
+        d14 = _int(k["default14"], f"{w}.default14", 0, STEP_V14_MAX)
+        if not lo << 7 <= d14 <= hi << 7:
+            raise PackError(f"manifest {w}.default14: {d14} is outside {lo << 7}..{hi << 7} (min, max)")
+        d7 = d14 >> 7
+    else:
+        d7 = _knob_range(k, w)[2] if lo <= hi else 64
+        d14 = d7 << 7
+    return steps, STEP["pair" if pair else "number"], names, step_v14(steps, step_entry(steps, d14)), d7
+
+def _pages(m):
+    """Validate the pages keys; returns (knobs_hi sorted by p, page3_title, page4_title) (knobs_hi [] when absent)."""
+    t3 = _str(m.get("page3_title", ""), "page3_title", 13, required=False)
+    t4 = _str(m.get("page4_title", ""), "page4_title", 13, required=False)
+    hi = m.get("knobs_hi", [])
+    if not isinstance(hi, list) or len(hi) > PAGES_KNOBS:
+        raise PackError(f"manifest knobs_hi: must be a list of at most {PAGES_KNOBS}")
+    ps, total = set(), 0
+    for i, k in enumerate(hi):
+        w = f"knobs_hi[{i}]"
+        if not isinstance(k, dict):
+            raise PackError(f"manifest {w}: must be an object")
+        for r in ("p", "long", "short"):
+            if r not in k:
+                raise PackError(f"manifest {w}: missing required key {r!r}")
+        bad = set(k) - HI_KNOB_KEYS
+        if bad:
+            raise PackError(f"manifest {w}: unknown key(s) {sorted(bad)}")
+        p = k["p"]
+        if isinstance(p, bool) or not isinstance(p, int) or not 17 <= p <= 32:
+            raise PackError(f"manifest {w}.p: {p!r} is not an integer 17..32")
+        if p in ps:
+            raise PackError(f"manifest {w}.p: P{p} used twice")
+        ps.add(p)
+        _str(k["long"], f"{w}.long", 12); _str(k["short"], f"{w}.short", 4)
+        if k.get("look", "dial") not in LOOK:
+            raise PackError(f"manifest {w}.look: {k['look']!r} not in {sorted(LOOK)}")
+        if k.get("text", "number") not in TEXT or k.get("text") == "preset":
+            raise PackError(f"manifest {w}.text: {k.get('text')!r} not in {sorted(set(TEXT) - {'preset'})}")
+        if k.get("role", "free") != "free":
+            raise PackError(f"manifest {w}.role: {k['role']!r}: P17..P32 are 'free' only (no presets set them)")
+        _knob_range(k, w)
+        if "names" in k:
+            names = k["names"]
+            if k.get("look", "dial") != "list":
+                raise PackError(f"manifest {w}.names: only for look 'list'")
+            if not isinstance(names, list) or not 1 <= len(names) <= ENUM_MAX:
+                raise PackError(f"manifest {w}.names: must be a list of 1..{ENUM_MAX} names")
+            for j, n in enumerate(names):
+                _str(n, f"{w}.names[{j}]", ENUM_NAME_BYTES - 1)
+            total += len(names)
+    total += sum(len(k.get("pair_names", [])) for k in m.get("knobs", []))
+    if total > PAGES_NAMES:
+        raise PackError(f"manifest knobs_hi / pair_names: {total} names in all, the limit is {PAGES_NAMES}")
+    return sorted(hi, key=lambda k: k["p"]), t3, t4
+
+def _pages_bytes(m):
+    hi, t3, t4 = _pages(m)
+    steps = sorted(((k["p"], _step(k, f"knobs[{i}]")) for i, k in enumerate(m.get("knobs", [])) if "steps" in k))
+    if not hi and not t3 and not t4 and not steps:
+        return b""   # every package without the keys stays byte for byte as before
+    table, knobs = [], b""
+    for i, k in enumerate(hi):
+        names = k.get("names", [])
+        lo, hh, d = _knob_range(k, f"knobs_hi[{i}]")
+        knobs += struct.pack("<10B", k["p"], LOOK[k.get("look", "dial")], TEXT[k.get("text", "number")],
+                             len(table) if names else 0, len(names), ROLE["free"], lo, hh, d, 0)
+        knobs += _fixed(k["long"], 12) + _fixed(k["short"], 4)
+        table += names
+    st = b""
+    for p, (n, kind, names, d14, _d7) in steps:
+        st += struct.pack("<BBHHBB", p, kind, n, d14, len(table) if names else 0, len(names or []))
+        table += names or []
+    b = struct.pack("<BBBB", len(hi), len(steps), len(table), 0) + _fixed(t3, 13) + _fixed(t4, 13) + knobs + st
+    b += b"".join(_fixed(n, ENUM_NAME_BYTES) for n in table)
+    return b + struct.pack("<HI", len(b), PAGES_MAGIC)
+
+def _blocks(rmp):
+    """The appended blocks of a format-3+ package, {magic: (body offset, length)}, walking the footers from the
+    manifest's end through the known magics (rmp_format.h)."""
+    h = parse_header(rmp)
+    if h["format"] < 3 or h["manifest_size"] < HEAD_BYTES:
+        return {}
+    start = 96 + h["image_size"] + 8 * h["reloc_count"]
+    n = rmp[start + 63]
+    lo = start + HEAD_BYTES + KNOB_BYTES * n
+    names = 0
+    for i in range(n):
+        first, count = rmp[lo - KNOB_BYTES * (n - i) + 3], rmp[lo - KNOB_BYTES * (n - i) + 4]
+        names = max(names, first + count)
+    lo += ENUM_NAME_BYTES * names
+    end, out = start + h["manifest_size"], {}
+    while end - 6 >= lo:
+        ln, magic = struct.unpack_from("<HI", rmp, end - 6)
+        if magic not in (LABELS_MAGIC, LABELS_MAGIC2, PAGES_MAGIC) or magic in out or ln > end - 6 - lo:
+            break
+        out[magic] = (end - 6 - ln, ln)
+        end -= 6 + ln
+    return out
+
+def parse_pages(rmp):
+    """The pages block of a package: {"knobs_hi": [...], "page3_title", "page4_title", "steps": {p: {"steps", "kind",
+    "default14", "pair_names" (pair only)}}} with the knobs as parse_manifest gives them, or None."""
+    blk = _blocks(rmp).get(PAGES_MAGIC)
+    if blk is None:
+        return None
+    at, _ln = blk
+    nhi, nst, nn, _ = struct.unpack_from("<BBBB", rmp, at)
+    clean = lambda b: b.rstrip(b"\0").decode()
+    t3, t4 = clean(rmp[at + 4:at + 17]), clean(rmp[at + 17:at + 30])
+    q = at + PAGES_HEAD
+    names_at = q + KNOB_BYTES * nhi + 8 * nst
+    name = lambda i: clean(rmp[names_at + ENUM_NAME_BYTES * i:names_at + ENUM_NAME_BYTES * (i + 1)])
+    knobs = []
+    for _ in range(nhi):
+        pp, look, text, first, count, role, lo, hi, d, _res = struct.unpack_from("<10B", rmp, q)
+        lng, sht = struct.unpack_from("<12s4s", rmp, q + 10); q += KNOB_BYTES
+        k = dict(p=pp, look=look, text=text, long=clean(lng), short=clean(sht), enum_first=first, enum_count=count,
+                 role=role, min=lo, max=hi, default=d)
+        if count:
+            k["names"] = [name(j) for j in range(first, first + count)]
+        knobs.append(k)
+    steps = {}
+    for _ in range(nst):
+        p, kind, n, d14, first, count = struct.unpack_from("<BBHHBB", rmp, q); q += 8
+        steps[p] = dict(steps=n, kind=kind, default14=d14)
+        if kind == STEP["pair"]:
+            steps[p]["pair_names"] = [name(j) for j in range(first, first + count)]
+    return dict(knobs_hi=knobs, page3_title=t3, page4_title=t4, steps=steps)
 
 # Labels that follow a list knob (rmp_format.h RMP_LABELS_*; 2026-10-26, plugins/mdkit): "type_labels":
 # {"knob": P of a list knob, "params": [P, ...] (1..8 of the manifest's other knobs), "sets": one per name of the list
@@ -658,8 +848,13 @@ def _manifest_bytes(m):
     table = []
     for i, k in enumerate(knobs):
         names = k.get("names", [])
-        lo, hi, d = _knob_range(k, f"knobs[{i}]")
-        out += struct.pack("<10B", k["p"], LOOK[k.get("look", "dial")], TEXT[k.get("text", "number")],
+        st = _step(k, f"knobs[{i}]")
+        if st is None:
+            lo, hi, d = _knob_range(k, f"knobs[{i}]")
+        else:   # a stepped knob's 7-bit fallback (an older host): default14 >> 7; a pair knob reads as a number
+            lo, hi, d = k.get("min", 0), k.get("max", 127), st[4]
+        text = "number" if k.get("text") == "pair" else k.get("text", "number")
+        out += struct.pack("<10B", k["p"], LOOK[k.get("look", "dial")], TEXT[text],
                            len(table) if names else 0, len(names), ROLE[k.get("role", "free")], lo, hi, d, 0)
         out += _fixed(k["long"], 12) + _fixed(k["short"], 4)
         table += names

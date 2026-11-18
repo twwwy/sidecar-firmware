@@ -32,8 +32,14 @@ plugin an API-1 host table (`api` 1, no v2 functions). Section 12.
   (the gate closed, Rytm 0x11), `params(state, p)` (P1..P16 as floats, each 0..127 plus the 7-bit fraction: value +
   fraction/128; P1..P8 are the SRC page, P9..P16 the SMPL page), `render(state, out, n)` (n = 1..max_block samples, mono,
   written, not added, nominal level +-1) and 8 reserved pointers: API 2's `load_entry`, `voice_enter`, `voice_leave`
-  in `reserved[1..3]` (`RMP_FN(f)` puts a function there; NULL turns the feature off; the host reads them only from
-  an `api` 2 table), `parse` (`[0]`) and `[4..7]` later.
+  in `reserved[1..3]`, API 3's `rmp3_plugin` in `reserved[4]` (`RMP_P_V3`, section 12a) and `params_hi` in
+  `reserved[5]` (`RMP_P_PARAMS_HI`, 0.5.0-pages: P17..P32, section 12; `RMP_FN(f)` puts a function there; NULL turns
+  the feature off; the host reads them only from an `api` 2 or 3 table, through `rmp_load_entry_of` ...
+  `rmp_params_hi_of`), `parse` (`[0]`) and `[6..7]` later.
+- **Stepped knobs** (0.5.0-pages): `rmp_step_v14(steps, q)`, `rmp_step_entry(steps, v14)` and
+  `rmp_step_entry_of(steps, value)` (`rmp_api.h`) map a P1..P16 knob's 14-bit value (`value * 128 + fraction`,
+  0..16256 = 0.0..127.0) to one of `steps` entries and back; a plugin reads its stepped knob with
+  `rmp_step_entry_of(steps, p[k])`. Section 3 (`steps`).
 - The entry table sits at the image's `entry_offset` (4-aligned; the table's 72 bytes must lie inside the image).
 - State is per voice: all 8 voices may play the same slot, each with its own `state_bytes` of state. Keep everything
   mutable in the state: the image's `.data`/`.bss` exist (bss is zeroed at load) but are shared by all voices of the slot
@@ -208,6 +214,36 @@ header and compares the layout.
   gives the slot another package. A plugin reads
   `knob` in `follows`' zones too: `(value * count[v]) >> 7`. Tests: `test_rmp_pack.py` Labels.test_type_lists,
   `manifest_test.cpp`, `test_core_labels.py` test_list_follows_another.
+- **Pages 3 and 4, stepped knobs** (0.5.0-pages): P17..P32 are a second SRC page (P17..P24) and a second SMPL page
+  (P25..P32) whose values the Sidecar host holds (they are no Rytm sound words and cannot be p-locked); the plugin gets
+  them through `params_hi` (section 12). Top-level keys: **`knobs_hi`**, a list of at most 16 knobs with `p` 17..32
+  (each once) and the fields of `knobs` (`long`, `short`, `look`, `text`, `names`, `min`, `max`, `default`; `role`
+  `free` or absent; not text `preset`; names 1..36, not counted against the Rytm's 16, so the package's format does
+  not move), **`page3_title`** and **`page4_title`** (at most 13 each, "" the host's default). Per P1..P16 knob:
+  **`steps`** (2..16256): the knob moves one entry per Rytm detent through its 14-bit value 0..127.0 (not with look
+  `list`, names, or text `preset` / `pool`); text **`pair`** with **`pair_names`** (2..36 names of 1..7 printable
+  characters, `steps` = n x n): entry q reads `pair_names[q / n] + " / " + pair_names[q % n]` (361 entries of a
+  19-name list: "B1 / B1" .. "B19 / B19"); **`default14`** (0..16256, the default as a 14-bit value, within
+  `min << 7 .. max << 7`; not with `default`; absent: `default << 7`; the packer writes the exact value of the
+  entry it means). The mapping, integer and rounding, defined once in `rmp_api.h` (and `rmp_pack.step_v14` /
+  `step_entry`): `v14(q) = (q * 16256 + (steps - 1) / 2) / (steps - 1)`, `q(v14) = min((v14 * (steps - 1) + 8128) /
+  16256, steps - 1)`: entry 0 is 0.0, the last 127.0, every entry round-trips, q is monotonic in v14 (16383, the
+  Rytm's 127 + 127/128, is the last entry). The packer writes them as one block after the name table (`rmp_format.h`
+  RMP_PAGES_*: nhi, nstep, nnames, 0, the two 13-byte titles, nhi 26-byte knobs as `rmp_knob3` with `enum_first`
+  into the block's own name table, nstep 8-byte `rmp_step` (p, kind 0 number / 1 pair, u16 steps, u16 def14,
+  name_first, name_count), nnames 8-byte names, then the 6-byte footer: the length and `RPG1`). Appended blocks chain
+  back from the manifest's end (`[body][u16 length][magic]`, through the known magics RLB1, RLB2, RPG1); the packer
+  puts the pages block **before** an RLB block, so a reader from before the chain, which looks at the end only,
+  still finds its labels, and with only a pages block sees an unknown magic and takes none. The package **stays
+  format 3** (or 4 / 5 for their own reasons): an older host (the Teensy, a card host before this) never reads the
+  block, has no P17..P32 (the plugin keeps its defaults: start them in `voice_init`) and plays a stepped knob as the
+  7-bit knob its own record describes - a pair knob has text `number` there and the default `default14 >> 7`. The C
+  reader (`rmp_manifest.h`): `rmp_manifest_pages` (the block into `rmp_pages`: titles, `hi[]` as `rmp_desc_knob`s,
+  `step[]` as `rmp_step_desc`s; entries that do not fit are skipped, a malformed block ignored), `rmp_pages_find`,
+  `rmp_pages_step`, `rmp_pages_enum`, `rmp_pages_pair_names` and `rmp_step_pair_text` (the "A / B" text). The host
+  runtime (storing P17..P32, calling `params_hi`, the remote pages) builds on it. Tests: `test_rmp_pack.py` Pages and
+  PagesC (the C reader on the packer's output), `extras/manifest_test.cpp` (chaining with RLB1, a package with only
+  one of the blocks, a format-2 package, malformed blocks, every steps count's round trip), `tools/tests/test_rmp_api.c`.
 - The packer refuses: static constructors, host (undefined) symbols, other relocation types, other loadable sections,
   PC-relative targets outside `.image`, a malformed or truncated ELF, an image over 1 MB, an unsafe id.
 - Example: `plugins/sine_test/manifest.json` (three knobs).
@@ -460,7 +496,10 @@ Limits (what the guard does not do):
   torn commits at every byte, an interrupted wipe). Build lines are in each file's header, for example
   `c++ -std=c++17 -O1 -I../src loader_test.cpp ../src/rmp_loader.cpp -o /tmp/loader_test`.
   `tools/tests/test_rmp_pack.py` (builds sine_test with the ARM toolchain, packs it, checks header, relocations,
-  manifest, negative cases and the layout against `rmp_format.h`) and `tools/tests/test_rmp_api.c` (ABI offsets).
+  manifest, negative cases and the layout against `rmp_format.h`; the classes HeaderLayout, Labels, Pages and PagesC
+  need no ARM toolchain: `cd tools/tests && python3 -m unittest test_rmp_pack.HeaderLayout test_rmp_pack.Labels
+  test_rmp_pack.Pages test_rmp_pack.PagesC`) and `tools/tests/test_rmp_api.c` (ABI offsets). `manifest_test`'s
+  argv[1] `-` skips the built sine_test package (no ARM toolchain); PagesC runs it that way when it is not built.
 - **Native harness** (`sim/rmpvoice.py`, `sim/rmp/rmp_native.c`): a machine's `lib<name>.dylib` through the same
   `rmp_plugin` table. `sim/tests/test_rmp.py` (`cd sim/tests && PYTHONPATH=.. ../../.venv/bin/python -m unittest test_rmp`;
   13 tests): sine_test pitch, tune and note-off; Noise Plethora Atari and the three packages (every algorithm sounds without
@@ -833,6 +872,17 @@ ignored on both sides; spec 2.1). Everything below is answered from `loop()` bet
   all of it (16-bit mono as the PSRAM pool holds it), pinned while the voice reads it - **untested: no PSRAM fitted**.
   `pool_read` delivers the first two stored channels interleaved, -1..1, and returns the frames it delivered: play
   silence for the rest. Call `pool_info` about once a block, not per sample (it runs from flash).
+- `params_hi(state, p)` (`rmp_plugin.reserved[5]`, `RMP_P_PARAMS_HI`, read with `rmp_params_hi_of`; 0.5.0-pages):
+  `p[0..15]` = P17..P32 (`RMP_PARAMS_HI`), the same convention as `params()`, the values of the manifest's `knobs_hi`
+  (section 3; a P without a knob is 0). The host holds them per track (no Rytm sound words, no p-locks; saved with the
+  kit, docs/um-pages.md) and calls it like `params()`: on the control core between render calls, with all 16 values,
+  at least once after `voice_init` / `voice_enter` before the voice renders, then whenever one changes; every state
+  of the track (its poly instances and unison stack) gets them. NULL: the machine has no P17..P32. RMP_API stays 2:
+  the slot was reserved and NULL in every table, and a host from before it never reads it, so a plugin that fills it
+  loads everywhere (it just is never called there: start P17..P32 at the manifest's defaults in `voice_init`); a new
+  API number would only make older hosts refuse such a plugin. `reserved[4]` is API 3's `RMP_P_V3` (section 12a),
+  hence `reserved[5]`. An API 3 machine uses the same function (section 12a, `RMP3_CAP_UM_P32`). The Teensy (Sidecar
+  Mini) does not call it yet.
 - Test plugin: `plugins/v2_test` (every API-2 feature; `sim/tests/test_rmp.py` V2Test, `sim/rmp_e2e.py` 7..11).
 
 ## 12a. Plugin API 3 (the Pi; in development)
