@@ -146,6 +146,14 @@ bar. A new built-in page: a `Cell` array, a `Page`, one row in `kTable`.
   push, and any encoder the page leaves unbound (it edits the stock parameter under the page). Sent before a frame
   whenever it changes and after every open; a key's release goes where its press went (rytm-mods 0026 design.md
   section 10).
+- Plugin-drawn screens (docs/um-pages.md): on the SRC view (`29 <t> 1`, rytm-mods 0026 rui1027) of a track that plays a
+  user machine whose plugin has `draw` (`rmp_api.h RMP_P_DRAW`; `hooks.user_draw_key` / `hooks.user_draw`, core/user/um.cpp),
+  the frame is the plugin's (`user_frame`): called with the 2A's P1..P16, the voice's P17..P32, the page and
+  RMP_DRAW_LOCKED for a held step's values, once a view and then whenever one of them changes (at the draw rate, 25 ms),
+  its row-major bitmap turned into the canvas layout (`rows_to_fb`, ui.h) and sent through the SRC view's tile diff and
+  commit pacing, no text items. The same message with the page in the track byte (`29 <t | (page - 1) << 4> <on>`: 2
+  SMPL, 3 SRC page 2, 4 SMPL page 2) is drawn only by a plugin. Declined (0), a fault (the guard mutes the slot) or no
+  draw: the view as before (a built-in machine's page on page 1, else stock, `3A 0 0` when we drew). `core/tests/test_um_draw.cpp`.
 - Platform: `remote_tick(ms)` from the control loop (Pi: `bridge::tick`, core 3; Teensy: `loop()`), `remote_status`
   for the SIDECAR page (Pi: the stats line; Teensy: its stats report). Pi console: `:rui` (numbers), `:rui=on|off`.
 

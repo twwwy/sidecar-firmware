@@ -184,6 +184,11 @@ Each: what the page says, what the engine does, why. Listed for the owner.
     docs/um-pages.md) and not through `b->p`: a machine's P1..P16 still arrive through `params()` (no `BLOCK_P` for
     machines), so the second pages follow the same path; `RMP3_CAP_UM_P32` says the host calls it. The same plugin
     code serves an API 2 host (the Teensy does not call it yet).
+10b. **A machine draws its own Rytm screens through `draw`** (`rmp_plugin.reserved[6]`, `RMP_P_DRAW`, an API 2
+    function as `params_hi`; docs/um-pages.md "Plugin-drawn screens"): a control call, guarded with the 1 ms the API
+    allows a draw (`kDrawLateUs`; the other calls' 500 us), `RMP3_CAP_DRAW` in the host's caps. Not `rmp3_plugin.view`
+    (row 12, deferred: declared pages whose widgets the host draws): the whole screen is the plugin's, it belongs to
+    the Rytm's page of a track rather than to a voice, and an API 2 table serves it the same way.
 11. **UFX assignments are kept per project** in `/.rytm/fxslots/<project>.txt` (the file the send FX already reads for
     the kits' tags): a line a UFX, `<tag 4 hex> <name>` as before, and for an assignment of `um=fx` the package
     after a tab: `<tag> <name>\t<id> <a.b.c>` (the slot map's id and version fields, the same exact-version-then-newest

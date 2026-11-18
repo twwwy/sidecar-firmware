@@ -81,7 +81,8 @@ docs/plugins.md section 3 "Pages 3 and 4, stepped knobs". The C reader: `rmp_man
   that the voice's machine has, VAL 0..127: as a turn on the Rytm, the file marked).
 - **Display and web**: `hooks.user_value_text(vi, k)` gives a stepped P1..P16 knob's text (a pair's "B3 / B12", a
   number's entry); the Pi's VOICE page shows it under the knob, the web's `voices` topic carries it as `vtext`
-  (only when one of P1..P8 has one). The Rytm-screen pages the Sidecar draws (core/ui) have no user machine page.
+  (only when one of P1..P8 has one). The Rytm-screen pages the Sidecar draws (core/ui) have no user machine page of
+  their own; a machine's plugin may draw its track's SRC / SMPL pages itself (below, "Plugin-drawn screens").
 
 ## The protocol: 52 UM PAGES (sim/protocol.py, rmp_proto.h)
 
@@ -150,7 +151,123 @@ highest P named. A list knob of P17..P32 (look list, kind enum): its names are a
 Reference values: `sim/protocol.py` (`pg_*`, `decode_pg`, `step_v14`, `step_entry`, `step_detent`, `pair_text`) is
 byte-for-byte the C builders' (`sim/tests/test_protocol_um_pages.py` CrossCheck).
 
-## Tests
+## Plugin-drawn screens
+
+A user machine may draw the Rytm's screen itself while one of its track's pages shows: the stock SRC page (the SRC view,
+rytm-mods 0026 rui1027: today drawn by the host only for its built-in machines), the stock SMPL page, and SRC / SMPL page
+2 (P17..P32, above). Every knob and key stays the Rytm's (and 0029's on page 2); only the picture is the plugin's. A
+plugin without `draw`, or one that declines a page, keeps what the page showed before.
+
+### The plugin (sdk/rmp/rmp_api.h, rmp_api3.h)
+
+```c
+/* rmp_plugin.reserved[RMP_P_DRAW]: the machine draws its own Rytm screen (NULL: the host's default) */
+#define RMP_P_DRAW 6
+#define RMP_DRAW_W 128
+#define RMP_DRAW_H 64
+#define RMP_DRAW_BYTES 1024              /* 1 bit a pixel, row-major, 16 bytes a row, MSB = the leftmost pixel, 1 = lit */
+enum { RMP_PAGE_SRC = 1, RMP_PAGE_SMPL = 2, RMP_PAGE_SRC2 = 3, RMP_PAGE_SMPL2 = 4 };
+enum { RMP_DRAW_LOCKED = 1u << 0 };      /* flags: P1..P16 include a held step's locks */
+typedef int32_t (*rmp_draw_fn)(void *state, int32_t page, uint32_t flags, int32_t track, const float *p, uint8_t *fb);
+static inline rmp_draw_fn rmp_draw_of(const rmp_plugin *p);   /* NULL for api < 2 or a NULL slot */
+RMP3_CAP_DRAW = 1u << 11         /* rmp3_host.caps: the host calls draw */
+```
+
+- `draw(state, page, flags, track, p, fb)`: `page` an `RMP_PAGE_*`; `p[0..31]` = P1..P32 as the page shows them (value +
+  fraction / 128: P1..P16 the Rytm's, a held step's locks with `RMP_DRAW_LOCKED`; P17..P32 the host's, as `params_hi`
+  gets them, the manifest's defaults until the track's values are the machine's; a P with no knob 0); every page gets
+  all 32. `track` 0..11 (BD .. CB). `fb`: `RMP_DRAW_BYTES`, cleared by the host; pixel (x, y) from the top-left is lit
+  when `fb[y * 16 + x / 8] & (0x80 >> (x % 8))`. Return 1: drawn (the frame replaces the whole screen, title bar
+  included: the host adds nothing); 0: not handled (the host's default for that page).
+- Called on the control core between render calls, **guarded** (Exec::guard, as API 3's control calls, for an API 2
+  plugin too): a fault mutes the slot (and the slots sharing its image) until `um=reload`, the page goes back to stock.
+  Keep it **under 1 ms**: three calls over 1 ms in a row (or one over the FIFO's stall limit) mute an API 3 plugin (an
+  older one is only counted, as for its other calls).
+- `state` is the voice state of the track's voice (`kTrackVoice`: BD 0, SD 2, RS / CP 7, BT 1, LT 3, MT / HT 5, CH / OH
+  4, CY / CB 6) when that voice plays the machine now, else **NULL** (no trig yet, another machine on a shared voice): a
+  draw must work from `p` alone. It may read the state (between render calls), never write what the sound needs.
+- The pointer must be inside the plugin's code (else BAD "its draw is outside its code"). RMP_API stays 2 (an older
+  host never reads reserved[6]: the plugin loads and plays, its pages stay stock there); API 3 machines see
+  `RMP3_CAP_DRAW`.
+
+### The host (core/ui/remote.cpp user_frame, core/user/um.cpp on_draw / on_draw_key)
+
+- A view (below) of track t is drawn by the plugin when t plays a user slot (the 33's voice byte 0x50..0x70, else the
+  voice's reports) that is READY, not muted, and whose plugin has `draw`. `hooks.user_draw_key(voice, slot)` says so (0:
+  no) and hashes the inputs besides P1..P16 (the plugin, the voice's P17..P32, whether the voice plays it).
+- **When**: once after each view message `on`, then whenever an input changes - P1..P16 (2A, the voice's own values
+  until the 2A came), the page, `RMP_DRAW_LOCKED`, the track, P17..P32 (a 52 VALUES turn, a kit load, `umknob`), the
+  plugin (a reload) - checked at the view's draw rate (25 ms, at once after a 2A). Never twice for the same inputs.
+- **The frame**: `rows_to_fb` (core/ui/ui.h) turns the row-major bitmap into the canvas layout, the view's tile diff
+  sends the changed tiles (`38` runs, `39`; a whole frame with `3E` after a view's `on`), no text items (`3D` empties
+  the slots the frame before had). Commit pacing as the SRC view's (0.4.3 / 0.4.4): while the Rytm plays, at most every
+  200 ms, a knob's own value (a 2A of one value, a held step's, a P17..P32 turn on page 3 / 4) every 100 ms; stopped:
+  at once. `3C` keepalives while the view lasts.
+- **Fallback**: `draw` returned 0, faulted, the slot muted / not ready, or no draw: page 1 shows what it showed before
+  (a built-in machine's SRC view page, else stock), pages 2..4 stock. When the host had drawn the view, `3A 0 0` gives
+  the Rytm its stock page back until the next commit. A declined page is asked again when an input changes.
+- The TRK + YES page comes first (no draw while it is open); the SMPL / page-2 views do not take the SRC view's pushes
+  (31 0x70..0x77 act on page 1 only). `rui=srclog=1` logs each draw ("track t page p drawn by Un: yes / declined").
+
+### The protocol: the view message with a page (sim/protocol.py `rui_src_view`, `decode_rui`)
+
+The SRC view's message carries the page in its track byte. Same command, version, length; host side only (the host
+never sends 29).
+
+| bytes | dir | meaning |
+|---|---|---|
+| `F0 7D 52 54 29 01 <t> <on> F7` | Rytm -> host | page 1, the stock SRC page of track t (0..11): unchanged since rui1027 |
+| `F0 7D 52 54 29 01 <t \| 0x10> <on> F7` | Rytm -> host | page 2, the stock SMPL page of track t |
+| `F0 7D 52 54 29 01 <t \| 0x20> <on> F7` | Rytm -> host | page 3, SRC page 2 (0029: P17..P24) |
+| `F0 7D 52 54 29 01 <t \| 0x30> <on> F7` | Rytm -> host | page 4, SMPL page 2 (0029: P25..P32) |
+| `F0 7D 52 54 2A 01 <t \| 0x40 held> <first> <n> {<int> <frac>} x n F7` | Rytm -> host | P1..P16 of the view's track: unchanged |
+
+`<on>` 1 shown, 0 left. The track byte is `t | (page - 1) << 4`: bits 0..3 the track (0..11), bits 4..5 page - 1, bit 6
+always 0 (reserved: the host drops the message). A receiver drops a track over 11, an `on` over 1, another length or
+version. Examples: SD's SMPL page shown `F0 7D 52 54 29 01 11 01 F7`; CB's SRC page 2 left `F0 7D 52 54 29 01 2B 00 F7`;
+BD's SMPL page 2 shown `F0 7D 52 54 29 01 30 01 F7`.
+
+**Why this message**: the host's answer to a view is its frame (0026's `38` / `39` / `3C` / `3A`), and 0026 already
+tells the SRC page with 29 and its values with 2A; the SMPL page and the second pages are the same kind of screen with
+the same values (2A carries P1..P16 for all of them, P17..P32 are the host's own). One view at a time, one state machine
+on both sides; 52 (0021 / 0029's slot protocol, routed to the user machines) stays about the pages' contents.
+
+**Older peers**: an older host drops a 29 whose track byte is over 11 (counted as malformed, nothing sent): the Rytm
+keeps its stock page (0029's own page 2 included), so the Rytm may send the page form unconditionally. An older Rytm
+never sends it: the plugin draws page 1 only (the plain 29, which every 0026 since rui1027 sends).
+
+### What the Rytm does (sidecar-mods 0026 / 0029)
+
+- **0026, the SMPL page**: as 29 for the SRC page - `29 <t | 0x10> 1` when the stock SMPL page of track t shows (also
+  on a machine change there and after each hello), `29 <t | 0x10> 0` when it leaves; for the tracks it sends 29 t 1 for
+  today (a Sidecar machine; the host ignores the others). Then 2A exactly as for the SRC view: all 16 after the `on`,
+  the changed span each tick, a held step's with 0x40.
+- **0029, page 2**: while SRC page 2 of track t shows (SRC held + DOWN), `29 <t | 0x20> 1`; SMPL page 2 `29 <t | 0x30>
+  1`; back to page 1 (+ UP) the page-1 view's `on` again (`29 <t> 1` / `29 <t | 0x10> 1`). 2A keeps coming for t as on
+  page 1 (the plugin draws P1..P16 there too). 0029's own page-2 drawing stays what shows until the host's frame comes,
+  and comes back when the host's frames stop.
+- **One view at a time**: an `on` replaces the view before (a new page, a new track); switching pages may send the old
+  view's `off` first or not - the host takes either. An `off` names the view it ends (the host ignores an `off` of
+  another track or page). After a hello: the view's `on` again, as 29 t 1 today.
+- **Showing the frame**: as the SRC view: the host's frame from the first `39` after the view's `on`, while `3C` /
+  frames keep coming (without them, the SRC view's timeout: stock again); `3A x 0` with the remote page closed: stock again; nothing from the
+  host: stock (0029's page 2 on pages 3 / 4). Every key and knob stays the Rytm's: the host sends no `37`, `3F` or
+  `34` for a view; on pages 3 / 4 0029's encoders keep sending 52 VALUES (the host redraws from them).
+- The SRC view's pushes (31 0x70..0x77: the source list, SAMPLE EDIT, CHOP's editor) are page 1's only; 0026 need not
+  send them on the other pages (the host ignores them there).
+
+### Tests
+
+- `core/tests/test_um_draw.cpp` (arm64 Mac, `make -C core test`): `rows_to_fb` (a pattern, the corners); the probe's
+  draw (`plugins/api3_test/pagesprobe.c`: page, flags, state, track, P1..P32 as bars, a fixed pattern; P2 1 declines,
+  P2 2 faults) on the SRC view (page 1, the fraction, P17..P32, the state), redraws on a 2A / a held step's / a P17
+  change and none on the same values, pages 2..4 by the track byte, an `off` of another page, malformed bytes, a
+  built-in machine's SMPL view stock, the API 2 machine with no voice (state NULL), a plugin without draw (stock), a
+  declined draw (`3A 0 0`, back), a fault (the slot muted, stock, no more calls), `RMP3_CAP_DRAW` in the host's caps.
+- `sim/tests/test_protocol_rui.py` `test_view_pages` (the bytes, every track and page both ways, refusals);
+  `tools/tests/test_rmp_api.c` (`RMP_P_DRAW`, the constants, `rmp_draw_of`).
+
+## Tests (P17..P32, stepped knobs)
 
 - `core/tests/test_um_pages.cpp` (`make -C core test`; arm64 Mac): the test machine `plugins/api3_test/pagesprobe.c`
   (`api3_pages` dual API 3, `v2_pages` plain API 2: 32 knobs, P31 none, P4 a 361-entry pair, P5 a stepped number)
@@ -165,7 +282,7 @@ byte-for-byte the C builders' (`sim/tests/test_protocol_um_pages.py` CrossCheck)
   builders and parsers); `sim/tests/test_protocol_um_pages.py` (C cross-check, round trips, refusals, detents);
   `tools/tests/test_rmp_pack.py` Pages / PagesC and `extras/manifest_test.cpp` (the block); `tools/tests/test_rmp_api.c`;
   `pi/engine/tests/test_ws.cpp` (the `vtext` JSON).
-- Rebuild the test packages after a change to pagesprobe.c: `make -C plugins/api3_test V=pages a64 && make -C
+- Rebuild the test packages after a change to pagesprobe.c (test_um_draw.cpp reads them too): `make -C plugins/api3_test V=pages a64 && make -C
   plugins/api3_test V=pages2 a64` (an AArch64 gcc or the rytm-circle Docker image), copy `api3_pages.a64.rmp` and
   `v2_pages.a64.rmp` to `core/tests/api3_pkgs/`, and delete the built ones under plugins/ (test_api3_compat compares
   every package it finds there with the API 2 golden file).

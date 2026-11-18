@@ -35,7 +35,8 @@ plugin an API-1 host table (`api` 1, no v2 functions). Section 12.
   in `reserved[1..3]`, API 3's `rmp3_plugin` in `reserved[4]` (`RMP_P_V3`, section 12a) and `params_hi` in
   `reserved[5]` (`RMP_P_PARAMS_HI`, 0.5.0-pages: P17..P32, section 12; `RMP_FN(f)` puts a function there; NULL turns
   the feature off; the host reads them only from an `api` 2 or 3 table, through `rmp_load_entry_of` ...
-  `rmp_params_hi_of`), `parse` (`[0]`) and `[6..7]` later.
+  `rmp_params_hi_of`), `draw` in `reserved[6]` (`RMP_P_DRAW`, `rmp_draw_of`: the machine draws its own Rytm screens,
+  docs/um-pages.md "Plugin-drawn screens"), `parse` (`[0]`) and `[7]` later.
 - **Stepped knobs** (0.5.0-pages): `rmp_step_v14(steps, q)`, `rmp_step_entry(steps, v14)` and
   `rmp_step_entry_of(steps, value)` (`rmp_api.h`) map a P1..P16 knob's 14-bit value (`value * 128 + fraction`,
   0..16256 = 0.0..127.0) to one of `steps` entries and back; a plugin reads its stepped knob with
@@ -884,6 +885,12 @@ ignored on both sides; spec 2.1). Everything below is answered from `loop()` bet
   API number would only make older hosts refuse such a plugin. `reserved[4]` is API 3's `RMP_P_V3` (section 12a),
   hence `reserved[5]`. An API 3 machine uses the same function (section 12a, `RMP3_CAP_UM_P32`). The Teensy (Sidecar
   Mini) does not call it yet.
+- `draw(state, page, flags, track, p, fb)` (`rmp_plugin.reserved[6]`, `RMP_P_DRAW`, read with `rmp_draw_of`): the
+  machine draws the Rytm's screen of a track that plays it - its SRC page, SMPL page and their second pages - as a
+  128 x 64 1-bit bitmap (`RMP_DRAW_BYTES`, row-major, MSB the leftmost pixel); 0 returned keeps the host's default.
+  Control core, guarded (a fault mutes the slot), under 1 ms, `state` may be NULL. The same rules for older hosts as
+  `params_hi` (NULL: none; an older host never reads it); API 3 machines see `RMP3_CAP_DRAW`. Everything else (when it
+  is called, the protocol for the Rytm): docs/um-pages.md "Plugin-drawn screens". The Teensy does not call it.
 - Test plugin: `plugins/v2_test` (every API-2 feature; `sim/tests/test_rmp.py` V2Test, `sim/rmp_e2e.py` 7..11).
 
 ## 12a. Plugin API 3 (the Pi; in development)
@@ -893,7 +900,8 @@ A dual package (an API 2 table, `.api = 2u`, with an `rmp3_plugin` in `reserved[
 older host and as API 3 here; an API 3 only package (`.api = 3u`) is refused by an older host (effects must be). In
 the engine so far: the transport snapshot in every block, the slot arena (`plugram=` on the Pi), guarded control calls
 (a fault mutes the slot; `um=reload:<slot>`), stereo out on PRE / POST, and user effects in the send FX's UFX1..UFX4
-(`um=fx:<n>:<id>`), a machine's P17..P32 through `params_hi` (`RMP3_CAP_UM_P32`, docs/um-pages.md) and an
+(`um=fx:<n>:<id>`), a machine's P17..P32 through `params_hi` (`RMP3_CAP_UM_P32`, docs/um-pages.md), a machine's own
+Rytm screens through `draw` (`RMP3_CAP_DRAW`, docs/um-pages.md "Plugin-drawn screens") and an
 effect's P5..P16 in `b->p` (`RMP3_CAP_FX_P16`). Test plugins: `plugins/api3_test` (the probe; `pagesprobe.c` for
 P17..P32 and stepped knobs), `plugins/ufx_pingpong` (the example effect);
 user effects PHASER and BBD and their labels on the Rytm: section 12b.
