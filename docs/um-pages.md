@@ -328,11 +328,13 @@ wire). An older 0029 drops ver 4 (its ver check).
 ### What the Rytm does (sidecar-mods 0026 / 0029)
 
 - **0029**: SEND FX page 1's encoders in the order above (BASE / WIDTH on C / D, the effect's P1..P4 on E..H: the words
-  and their locks unchanged, only which encoder turns which); `29 <12 | 13 + (page - 1) << 4> 1` when a SEND FX page shows
-  (page changes, a slot change, after a hello), `... 0` when it leaves; 22 ver 4 kept per slot.
-- **0026**: the host's frame on a SEND FX page as on the SRC view (from the first `39` after the view's `on`, while
-  `3C` / frames come). With DRAWS 1 for the slot, a change to its page keeps what the screen shows (whatever page was
-  up) until that first commit (the hold of 0026's umhold, 300 ms at most); with 0 it shows its own page at once.
+  and their locks unchanged, only which encoder turns which); it keeps 22 ver 4 per slot (both 0 while the USB port is
+  down) and says which SEND FX page shows, for 0026.
+- **0026**: `29 <12 | 13 + (page - 1) << 4> 1` when a SEND FX page shows (page and slot changes, after a hello; the view
+  before ends first), `... 0` when it leaves; no 2A for these views. The host's frame on a SEND FX page as on the SRC view
+  (from the first `39` after the view's `on`, while `3C` / frames come). With DRAWS 1 for the slot, a change to its page
+  keeps what the screen shows (the host's frame, or a stock page frozen) until that first commit, 300 ms at most; with 0
+  it shows its own page at once. A `3A 0 0` ends any hold at once.
 
 ### Tests
 
