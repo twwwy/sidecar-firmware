@@ -7,11 +7,12 @@
 #   make V=stereo a64     api3_stereo.a64.rmp   out_channels 2 (R = -L on PRE / POST)
 #   make V=poly|polyarena|setupcrash|setupslow|setupmore|setuprefuse|attachcrash|fx|fx16 a64: the other variants
 #                         (probe.c's and fxprobe.c's headers)
+#   make V=fxdraw a64     api3_fxdraw.a64.rmp   fx16 with a draw for the SEND FX pages (fxprobe.c)
 #   make V=pages|pages2 a64  api3_pages / v2_pages: P17..P32 and stepped knobs, dual and plain API 2 (pagesprobe.c)
 #   make all-variants     every one; make fixtures copies them for the tests, make check-fixtures compares
 # aarch64-none-elf-gcc from PATH, else the rytm-circle Docker image (sdk/rmp/plugin.mk).
 V ?= dual
-VARIANTS := dual only initcrash needs big stereo poly polyarena setupcrash setupslow setupmore setuprefuse attachcrash fx fx16 pages pages2
+VARIANTS := dual only initcrash needs big stereo poly polyarena setupcrash setupslow setupmore setuprefuse attachcrash fx fx16 fxdraw pages pages2
 NAME_dual := api3_test
 NAME_only := api3_only
 NAME_initcrash := api3_initcrash
@@ -27,6 +28,7 @@ NAME_setuprefuse := api3_setupre
 NAME_attachcrash := api3_attachcr
 NAME_fx := api3_fx
 NAME_fx16 := api3_fx16
+NAME_fxdraw := api3_fxdraw
 NAME_pages := api3_pages
 NAME_pages2 := v2_pages
 DEF_dual :=
@@ -44,13 +46,14 @@ DEF_setuprefuse := -DPROBE_SETUP=4
 DEF_attachcrash := -DPROBE_ATTACHCRASH=1
 DEF_fx := 
 DEF_fx16 := -DPROBE_FX16=1
+DEF_fxdraw := -DPROBE_FXDRAW=1
 DEF_pages :=
 DEF_pages2 := -DPAGES_PLAIN2=1
 NAME := $(NAME_$(V))
 ifeq ($(NAME),)
 $(error V=$(V): one of $(VARIANTS))
 endif
-SRCS := $(if $(filter fx fx16,$(V)),fxprobe.c,$(if $(filter pages pages2,$(V)),pagesprobe.c,probe.c))
+SRCS := $(if $(filter fx fx16 fxdraw,$(V)),fxprobe.c,$(if $(filter pages pages2,$(V)),pagesprobe.c,probe.c))
 BUILD := build/$(V)
 CFLAGS_EXTRA := $(DEF_$(V))
 MANIFEST := $(V).json

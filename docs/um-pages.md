@@ -267,6 +267,82 @@ never sends it: the plugin draws page 1 only (the plain 29, which every 0026 sin
 - `sim/tests/test_protocol_rui.py` `test_view_pages` (the bytes, every track and page both ways, refusals);
   `tools/tests/test_rmp_api.c` (`RMP_P_DRAW`, the constants, `rmp_draw_of`).
 
+## An effect's pages (sendfx-draw)
+
+A user effect (`RMP3_KIND_EFFECT`, docs/plugins.md 12b) may draw the Rytm's SEND FX pages of the send slot that plays it,
+as a machine draws its track's pages (above). Every knob stays the Rytm's; only the picture is the plugin's, and a plugin
+frame replaces the whole screen, so it draws the slot's own controls too. The pages (rytm-mods 0029):
+
+| page | A | B | C | D | E | F | G | H |
+|---|---|---|---|---|---|---|---|---|
+| 1 `RMP_PAGE_FX1` | TYPE | ROUTE | BASE | WIDTH | P1 | P2 | P3 | P4 |
+| 2 `RMP_PAGE_FX2` | P5 | P6 | P7 | P8 | P9 | P10 | P11 | P12 |
+| 3 `RMP_PAGE_FX3` | P13 | P14 | P15 | P16 | | | | |
+
+(TYPE, ROUTE, BASE, WIDTH are the Sidecar's; P1..P4 are the effect's knobs in the Rytm's kit words 38 / 39, p-lockable;
+P5..P16 the Sidecar's, `RMP3_CAP_FX_P16`.) An effect without a draw keeps the Rytm's own pages, with its labels, as
+before: no package changes or rebuilds for any of this.
+
+### The plugin (sdk/rmp/rmp_api.h, rmp_api3.h)
+
+The same `draw` as a machine's (`rmp_plugin.reserved[RMP_P_DRAW]`), called when the host has `RMP3_CAP_FX_DRAW`
+(`1u << 12`):
+
+- `page` `RMP_PAGE_FX1` / `FX2` / `FX3` (5, 6, 7); `track` the send slot (0 SEND FX 1, 1 SEND FX 2); `flags` 0;
+- `p[0..15]` = P1..P16 as the effect's render gets them (P5..P16 its manifest's defaults until the slot's values are
+  this effect's); `p[16..19]` (`RMP_DRAW_FX_TYPE`, `_ROUTE`, `_BASE`, `_WIDTH`) = the slot's TYPE (the send FX id),
+  ROUTE (0..63 PRE, 64..127 POST), BASE and WIDTH (0..127, `core/fx/insert.h` sfx-basewidth); the rest 0;
+- `state` **always NULL**: an effect renders on core 2 while the draw runs on the control core, so a draw works from `p`
+  alone;
+- guarded as a machine's (a fault mutes the effect, as a fault in its render does), under 1 ms.
+
+
+### The host (core/ui/remote.cpp fx_frame / fx_tick, core/user/um.cpp on_fx_draw*, core/host_link.cpp)
+
+- The SEND FX view is its own state (send slot, page), never a track view: one view at a time, a track's `on` ends it
+  and its `on` ends a track's.
+- **Fast**: the view's `on` draws at once (no wait for the 25 ms draw tick) and sends the whole frame (commit pacing
+  does not hold a view's first frame). After that the inputs (P1..P20, the page, the plugin) are checked at the draw
+  rate and the plugin is called on a change only; a knob's change is the user's own (`kSrcUserMs` pacing while the
+  Rytm plays). Each slot's pages keep their last frame by its inputs: a page flipped back to with nothing changed is
+  sent from there, with no plugin call (`remote_stats().fx_cached`). The tile diff sends only what changed.
+- **No flash**: 22 ver 4 SENDFX DRAWS tells the Rytm which slots draw (below), so on a change to such a page it keeps
+  what it shows until the host's first frame instead of showing its own page first. When the new view (a track's or a
+  SEND FX page) is not drawn by a plugin while the view before was, the host sends `3A 0 0` at once (for machine views
+  too): the Rytm's own page comes back without waiting for its hold to time out.
+- Fallback as a machine's: the draw declining (0) or faulting, the effect muted or unloaded, another effect without a
+  draw in the slot: the Rytm's own page (`3A 0 0` after ours).
+
+### The protocol (sim/protocol.py `rui_sendfx_view`, `sendfx_draws`)
+
+| bytes | dir | meaning |
+|---|---|---|
+| `F0 7D 52 54 29 01 <12 \| 13 + (page - 1) << 4> <on> F7` | Rytm -> host | SEND FX 1 / 2's page 1..3 shown (1) / left (0) |
+| `F0 7D 52 54 22 04 <fx> <on> F7` | host -> Rytm | 22 ver 4 SENDFX DRAWS: FX fx's effect draws its pages (1) or not (0) |
+
+The view is 29's track byte with tracks 12 / 13 (an older host drops a track over 11 as malformed: the Rytm keeps its
+own page); page 4 and bit 6 stay malformed. The Rytm starts from 0 for both slots; the host sends a 1 (again with
+BASE / WIDTH's 2 s refresh, on ASK and hello) and a 0 only after a 1 (a slot without such an effect costs nothing on the
+wire). An older 0029 drops ver 4 (its ver check).
+
+### What the Rytm does (sidecar-mods 0026 / 0029)
+
+- **0029**: SEND FX page 1's encoders in the order above (BASE / WIDTH on C / D, the effect's P1..P4 on E..H: the words
+  and their locks unchanged, only which encoder turns which); `29 <12 | 13 + (page - 1) << 4> 1` when a SEND FX page shows
+  (page changes, a slot change, after a hello), `... 0` when it leaves; 22 ver 4 kept per slot.
+- **0026**: the host's frame on a SEND FX page as on the SRC view (from the first `39` after the view's `on`, while
+  `3C` / frames come). With DRAWS 1 for the slot, a change to its page keeps what the screen shows (whatever page was
+  up) until that first commit (the hold of 0026's umhold, 300 ms at most); with 0 it shows its own page at once.
+
+### Tests
+
+- `core/tests/test_fx_draw.cpp` (arm64 Mac): the probe `plugins/api3_test` `V=fxdraw` (`api3_fxdraw.a64.rmp`): page 1's
+  values (page, slot, flags 0, state NULL, the caps, P1..P16, TYPE ROUTE BASE WIDTH), pages 2 / 3, the page cache (back
+  to a page: no draw), redraws on a knob and BASE / WIDTH and none on the same values, an effect without draw (PHASER:
+  the Rytm's page, `3A 0 0`), PHASER / BBD / NIMBUS loading unchanged, one view at a time, malformed bytes, decline,
+  fault (muted, no more calls), 22 ver 4 on ASK and after the fault.
+- `sim/tests/test_protocol_rui.py` `test_sendfx_view` (the bytes, round trips, refusals).
+
 ## Tests (P17..P32, stepped knobs)
 
 - `core/tests/test_um_pages.cpp` (`make -C core test`; arm64 Mac): the test machine `plugins/api3_test/pagesprobe.c`

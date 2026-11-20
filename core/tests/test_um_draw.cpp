@@ -229,7 +229,7 @@ int main() {
   tick(2);
   CHECK(remote_src_track() == 0 && remote_stats().user_draws == d4);
   const uint32_t bad = remote_stats().bad;
-  view(0x40, 1), view(12, 1), view(0x1C, 1);
+  view(0x40, 1), view(14, 1), view(0x1F, 1);   // (12 / 13: SEND FX 1 / 2's views since sendfx-draw, test_fx_draw.cpp)
   CHECK(remote_stats().bad == bad + 3 && remote_src_track() == 0);
   view(0x30, 0);
   CHECK(remote_src_track() < 0);

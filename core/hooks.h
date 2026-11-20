@@ -34,6 +34,13 @@ struct Hooks {
   // cleared by the hook), guarded (a fault mutes the slot); 1 drawn, 0 not (declined, faulted, none).
   uint32_t (*user_draw_key)(int vi, int slot);
   int (*user_draw)(int vi, int slot, int track, int page, uint32_t flags, const float* p16, uint8_t* fb);
+  // An effect's pages (sendfx-draw: the Rytm's SEND FX pages of send slot sl 0..1, RMP_PAGE_FX1..FX3). fx_draw_key:
+  // nonzero while sl plays a READY, unmuted user effect whose plugin has a draw; it changes with the plugin (a reload).
+  // fx_draw_values: p[0..17] = the effect's P1..P16 as its render gets them, TYPE, ROUTE (the caller adds BASE / WIDTH).
+  // fx_draw: the draw with p[0..19], into fb (RMP_DRAW_BYTES, row-major, cleared), guarded; 1 drawn, 0 not.
+  uint32_t (*fx_draw_key)(int sl);
+  void (*fx_draw_values)(int sl, float* p18);
+  int (*fx_draw)(int sl, int page, const float* p20, uint8_t* fb);
   void (*slot_ask)(const uint8_t* d, int len);      // 0x19 (null: core/slots.cpp)
   void (*slot_pages)(const uint8_t* d, int len);    // 0x52 UM PAGES from the Rytm (0.5.0-pages; null: ignored)
   void (*slot_hello)();                       // 0x35: the Rytm's USB port came up (null: ignored)

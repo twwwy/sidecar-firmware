@@ -142,8 +142,13 @@ typedef struct rmp_plugin {
 #define RMP_DRAW_W 128
 #define RMP_DRAW_H 64
 #define RMP_DRAW_BYTES 1024              /* 1 bit a pixel, row-major, 16 bytes a row, MSB = the leftmost pixel, 1 = lit */
-enum { RMP_PAGE_SRC = 1, RMP_PAGE_SMPL = 2, RMP_PAGE_SRC2 = 3, RMP_PAGE_SMPL2 = 4 };
+enum { RMP_PAGE_SRC = 1, RMP_PAGE_SMPL = 2, RMP_PAGE_SRC2 = 3, RMP_PAGE_SMPL2 = 4,
+       /* an effect (rmp_api3.h RMP3_KIND_EFFECT, RMP3_CAP_FX_DRAW): the Rytm's SEND FX page 1 (A TYPE, B ROUTE, C BASE,
+          D WIDTH, E..H P1..P4), page 2/3 (A..H P5..P12), page 3/3 (A..D P13..P16) */
+       RMP_PAGE_FX1 = 5, RMP_PAGE_FX2 = 6, RMP_PAGE_FX3 = 7 };
 enum { RMP_DRAW_LOCKED = 1u << 0 };      /* flags: P1..P16 include a held step's locks */
+/* an effect's draw: p[] indexes of the send slot's own controls (the host's, 0..127), after the effect's P1..P16 */
+enum { RMP_DRAW_FX_TYPE = 16, RMP_DRAW_FX_ROUTE = 17, RMP_DRAW_FX_BASE = 18, RMP_DRAW_FX_WIDTH = 19 };
 
 /* A function in a reserved slot of a table: RMP_FN(load_entry). */
 #define RMP_FN(f) ((void *)(f))
@@ -156,7 +161,11 @@ typedef void (*rmp_params_fn)(void *state, const float *p);
    track's first voice state, or NULL when no voice plays the machine yet - a draw must not need it.
    Pixel (x, y) from the top-left is lit when fb[y * 16 + x / 8] & (0x80 >> (x % 8)). Pages: RMP_PAGE_SRC the
    Rytm's SRC page (P1..P8 on its encoders), RMP_PAGE_SMPL its SMPL page (P9..P16), RMP_PAGE_SRC2 / RMP_PAGE_SMPL2
-   the second SRC / SMPL page (P17..P24 / P25..P32, the manifest's knobs_hi); every page gets all 32 values. */
+   the second SRC / SMPL page (P17..P24 / P25..P32, the manifest's knobs_hi); every page gets all 32 values.
+   An effect (RMP3_CAP_FX_DRAW): page RMP_PAGE_FX1..FX3, track = the send slot (0 SEND FX 1, 1 SEND FX 2), flags 0,
+   p[0..15] = its P1..P16 as its render gets them, p[16..19] = the slot's TYPE (the send FX id), ROUTE (0..63 PRE,
+   64..127 POST), BASE and WIDTH (RMP_DRAW_FX_*), the rest 0; state is always NULL (an effect renders on another core:
+   its draw must work from p alone). */
 typedef int32_t (*rmp_draw_fn)(void *state, int32_t page, uint32_t flags, int32_t track, const float *p, uint8_t *fb);
 typedef int32_t (*rmp_pool_info_fn)(int32_t slot, rmp_pool_info *info);
 typedef int32_t (*rmp_pool_read_fn)(int32_t slot, uint32_t pos, float *buf, int32_t n);

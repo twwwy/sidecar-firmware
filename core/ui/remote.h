@@ -186,6 +186,7 @@ struct RemoteStats {
   uint32_t leds;                       // 1026: 34s sent (the trig keys' LEDs)
   uint32_t src_views, src_vals, src_frames;   // 1027: the Rytm's 29s and 2As, SRC view frames committed
   uint32_t user_draws, user_drawn;     // plugin-drawn screens: the plugin's draw called, of them drawn (returned 1)
+  uint32_t fx_views, fx_cached;       // sendfx-draw: the SEND FX views' 29s, frames taken from the page cache (no draw)
   uint32_t draw_us_max, draw_us_sum;   // the time a tick's draw + diff + send took (when it drew)
   uint8_t page, voice;                 // the current page: 0 SIDECAR, 1 a voice page (voice 0..7), 2 SYSTEM, 3 extra,
                                        // 4 the SRC view (voice = the track 0..11)

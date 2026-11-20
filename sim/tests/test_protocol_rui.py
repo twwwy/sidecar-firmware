@@ -81,7 +81,7 @@ class RemoteUi(unittest.TestCase):
         self.assertEqual((cmd, len(v)), (P.RUI_SRC_VALS, 10 + 2 * 3))
         self.assertEqual(P.decode_rui(cmd, body), dict(track=0, first=0, values=[3, 100.5, 20]))
         self.assertIsNone(P.decode_rui(P.RUI_SRC_VALS, bytes([1, 0, 15, 2, 1, 0, 1, 0])))   # past P16
-        self.assertIsNone(P.decode_rui(P.RUI_SRC_VIEW, bytes([1, 12, 1])))                 # past track 11
+        self.assertIsNone(P.decode_rui(P.RUI_SRC_VIEW, bytes([1, 14, 1])))                 # past track 11 (12 / 13: SEND FX views)
         self.assertFalse({P.RUI_SRC_VIEW, P.RUI_SRC_VALS} & {P.FXIN, P.FXIN_STATE, P.SLOT_PRINTS, P.SENDFX})
 
     def test_view_pages(self):
@@ -94,11 +94,32 @@ class RemoteUi(unittest.TestCase):
             for pg in range(1, 5):
                 for on in (0, 1):
                     self.assertEqual(P.decode_rui(*P.parse(P.rui_src_view(t, on, pg))), dict(track=t, on=on, page=pg))
-        for bad in ([0x40, 1], [0x1C, 1], [0x3F, 0], [0x10, 2], [0x10]):   # bit 6, track 12, 15, on 2, short
+        for bad in ([0x40, 1], [0x3C, 1], [0x1E, 1], [0x3F, 0], [0x10, 2], [0x10]):   # bit 6, SEND FX page 4, track 14, 15, on 2, short
             self.assertIsNone(P.decode_rui(P.RUI_SRC_VIEW, bytes([1] + bad)))
         for args in ((12, 1, 1), (0, 1, 0), (0, 1, 5)):
             with self.assertRaises(ValueError):
                 P.rui_src_view(*args)
+
+    def test_sendfx_view(self):
+        # sendfx-draw: 29 <12 | 13 (SEND FX 1 | 2) + (page - 1) << 4> <on>, page 1..3
+        self.assertEqual(P.rui_sendfx_view(0, 1), bytes([0xF0, 0x7D, 0x52, 0x54, 0x29, 1, 0x0C, 1, 0xF7]))
+        self.assertEqual(P.rui_sendfx_view(1, 0, 3)[6:8], bytes([0x2D, 0]))
+        for fx in (0, 1):
+            for pg in (1, 2, 3):
+                for on in (0, 1):
+                    self.assertEqual(P.decode_rui(*P.parse(P.rui_sendfx_view(fx, on, pg))), dict(sendfx=fx, on=on, page=pg))
+        for bad in ([0x3C, 1], [0x3D, 0], [0x4C, 1], [0x0C, 2], [0x0E, 1]):   # page 4, bit 6, on 2, track 14
+            self.assertIsNone(P.decode_rui(P.RUI_SRC_VIEW, bytes([1] + bad)))
+        for args in ((2, 1, 1), (0, 1, 0), (0, 1, 4)):
+            with self.assertRaises(ValueError):
+                P.rui_sendfx_view(*args)
+        # 22 ver 4 SENDFX DRAWS
+        self.assertEqual(P.sendfx_draws(1, True), bytes([0xF0, 0x7D, 0x52, 0x54, 0x22, 4, 1, 1, 0xF7]))
+        for fx in (0, 1):
+            for on in (0, 1):
+                self.assertEqual(P.decode_sendfx_draws(P.sendfx_draws(fx, on)[5:-1]), dict(fx=fx, on=on))
+        for bad in ([4, 2, 1], [4, 0, 2], [4, 0], [3, 0, 1]):   # fx 2, on 2, short, another ver
+            self.assertIsNone(P.decode_sendfx_draws(bytes(bad)))
 
     def test_pixel_layout(self):
         fb = bytearray(1024)

@@ -39,6 +39,9 @@ enum {                           /* what a host has (rmp3_host.caps), a plugin n
                                     RMP_P_PARAMS_HI), as P1..P16 through params(); without it params_hi is never called */
   RMP3_CAP_DRAW      = 1u << 11, /* the host calls rmp_plugin's draw (rmp_api.h RMP_P_DRAW) for the Rytm's SRC / SMPL
                                     pages of a track playing the machine; without it draw is never called */
+  RMP3_CAP_FX_DRAW   = 1u << 12, /* the host calls an effect's draw (rmp_api.h RMP_P_DRAW) for the Rytm's SEND FX pages
+                                    of a send slot playing it (RMP_PAGE_FX1..FX3); without it an effect's draw is never
+                                    called (its pages stay the Rytm's own) */
 };
 
 typedef struct rmp3_host {       /* 96 B on AArch64 */

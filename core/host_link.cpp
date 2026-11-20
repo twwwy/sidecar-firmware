@@ -136,6 +136,24 @@ static bool s_bw_up;   // the Rytm listens: set by its ASK, first 0x20, hello or
 // the Rytm was last told (a kit load, a TYPE that takes its defaults), with BASE / WIDTH's 2 s refresh, ASK and hello; the
 // Rytm's a turn, taken (no echo). Only for a slot whose effect has them (nx: the Rytm shows no page 2 without).
 static int16_t s_x_sent[fx::kSlots][fx::kXKnobs];
+// sendfx-draw (docs/um-pages.md "An effect's pages"): 22 ver 4 <fx> <on> (sim/protocol.py sendfx_draws), host -> Rytm:
+// 1 while send slot fx plays a user effect that draws its SEND FX pages (hooks.fx_draw_key), so the Rytm keeps the
+// screen it shows over a change to those pages until our first frame instead of flashing its own. The Rytm starts from
+// 0 (none draws): a 1 is sent, and again with BASE / WIDTH's 2 s refresh, ASK and hello; a 0 only when a 1 was told
+// (a slot without such an effect costs nothing on the wire). An older 0029 drops it (its ver check): its own pages.
+static int8_t s_draws_sent[fx::kSlots] = {0, 0};
+static CORE_COLD bool sendfx_draws_out() {
+  bool sent = false;
+  for (int s = 0; s < fx::kSlots; ++s) {
+    const int8_t on = hooks.fx_draw_key && hooks.fx_draw_key(s) ? 1 : 0;
+    if (on == s_draws_sent[s]) continue;
+    const uint8_t m[] = {0xF0, 0x7D, 0x52, 0x54, 0x22, 0x04, (uint8_t)s, (uint8_t)on, 0xF7};
+    hooks.to_rytm(m, (int)sizeof m);
+    s_draws_sent[s] = on;
+    sent = true;
+  }
+  return sent;
+}
 static CORE_COLD bool sendfx_x_out() {
   bool sent = false;
   for (int s = 0; s < fx::kSlots; ++s) {
@@ -159,9 +177,11 @@ static CORE_COLD bool sendfx_bw_out() {
     for (auto& x : s_bw_sent) x[0] = x[1] = -1;
     for (auto& x : s_x_sent)
       for (int16_t& v : x) v = -1;
+    for (int8_t& x : s_draws_sent) x = x ? -1 : 0;   // (a 1 again; a 0 already the Rytm's own)
     s_bw_all_ms = now_ms();
   }
   bool sent = sendfx_x_out();
+  sent |= sendfx_draws_out();
   for (int s = 0; s < fx::kSlots; ++s) {
     int b, w;
     ins::eq_bw(ins::kBus0 + s, &b, &w);
@@ -178,6 +198,7 @@ static CORE_COLD void sendfx_bw_all() {   // the Rytm asked or came up: what its
   for (auto& x : s_bw_sent) x[0] = x[1] = -1;
   for (auto& x : s_x_sent)
     for (int16_t& v : x) v = -1;
+  for (int8_t& x : s_draws_sent) x = 0;   // (the Rytm came up or asked: it starts from 0; a 1 is sent again)
   s_bw_ms = now_ms() - 20, s_bw_all_ms = now_ms(), s_bw_up = true;
   sendfx_bw_out();
 }

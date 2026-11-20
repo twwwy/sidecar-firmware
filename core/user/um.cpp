@@ -1748,6 +1748,53 @@ int on_draw(int vi, int s, int track, int page, uint32_t flags, const float* p16
   if (!gcall(s, "draw", [&] { r = f(st, page, flags, track, p, fb); }, kDrawLateUs)) return 0;
   return r == 1 ? 1 : 0;
 }
+// ---- an effect's pages (sendfx-draw: the Rytm's SEND FX pages, rmp_api.h RMP_PAGE_FX1..FX3)
+const core::fx::KnobLabels* fx_labels(int u);   // (below: the loaded effect u's labels and P5..P16 defaults)
+// the user effect send slot sl plays (its TYPE, loaded, the kit's), READY, not muted, with a draw: its slot, else -1
+int fx_draw_slot(int sl) {
+  if (sl < 0 || sl >= core::fx::kSlots) return -1;
+  const int t = core::fx::control.knob[sl][0], u = t - core::fx::kFirstUser;
+  if (u < 0 || u >= kUfx || !core::fx::user_plays_at(t, sl)) return -1;
+  const int s = kSlots + u;
+  if (g_slot[s].st != RMP_SLOT_READY || !g_slot[s].p || muted(s) || !rmp_draw_of(g_slot[s].p)) return -1;
+  return s;
+}
+// core::hooks.fx_draw_key: the plugin (its slot, fingerprint, table, the code epoch) hashed; 0 while sl cannot draw
+uint32_t on_fx_draw_key(int sl) {
+  const int s = fx_draw_slot(sl);
+  if (s < 0) return 0;
+  uint32_t h = 2166136261u;
+  auto mix = [&](uint32_t x) { for (int i = 0; i < 4; ++i) h = (h ^ (x >> (8 * i) & 0xFF)) * 16777619u; };
+  mix((uint32_t)s), mix(g_slot[s].fp), mix((uint32_t)(uintptr_t)g_slot[s].p), mix(code_epoch());
+  return h ? h : 1u;
+}
+// core::hooks.fx_draw_values: P1..P16 as fx_run hands them (P1..P4 the send slot's knobs; P5..P16 the Sidecar's once
+// they are this effect's, else its manifest's defaults), then TYPE and ROUTE
+void on_fx_draw_values(int sl, float* p) {
+  for (int j = 0; j < RMP_PARAMS + 2; ++j) p[j] = 0.0f;
+  if (sl < 0 || sl >= core::fx::kSlots) return;
+  const int t = core::fx::control.knob[sl][0], u = t - core::fx::kFirstUser;
+  const bool own = core::fx::control.xtype[sl] == t;
+  const core::fx::KnobLabels* xl = own || u < 0 || u >= kUfx ? nullptr : fx_labels(u);
+  for (int j = 0; j < 16; ++j)
+    p[j] = j < 4 ? (float)core::fx::control.knob[sl][2 + j] : own ? (float)core::fx::control.xknob[sl][j - 4]
+                                                                  : (float)(xl && j - 4 < xl->nx ? xl->xdef[j - 4] : 0);
+  p[RMP_DRAW_FX_TYPE] = (float)t;
+  p[RMP_DRAW_FX_ROUTE] = (float)core::fx::control.knob[sl][1];
+}
+// core::hooks.fx_draw: the effect's draw for send slot sl's page, state NULL (it renders on core 2), fb cleared;
+// guarded with kDrawLateUs (a fault mutes the effect, as in its render)
+int on_fx_draw(int sl, int page, const float* p20, uint8_t* fb) {
+  const int s = fx_draw_slot(sl);
+  if (s < 0 || !fb) return 0;
+  rmp_draw_fn f = rmp_draw_of(g_slot[s].p);
+  float p[RMP_PARAMS + RMP_PARAMS_HI] = {};
+  for (int k = 0; k < 20; ++k) p[k] = p20 ? p20[k] : 0.0f;
+  memset(fb, 0, RMP_DRAW_BYTES);
+  int32_t r = 0;
+  if (!gcall(s, "draw", [&] { r = f(nullptr, page, 0u, sl, p, fb); }, kDrawLateUs)) return 0;
+  return r == 1 ? 1 : 0;
+}
 
 // The voices' values follow their machine: a voice on a READY slot whose values are another machine's (or none: a kit
 // file without UMX lines for it) takes this one's manifest defaults. Not saved (the defaults come back from the
@@ -2957,11 +3004,12 @@ uint32_t host_caps() {
   return RMP3_CAP_TRANSPORT | RMP3_CAP_STEREO | RMP3_CAP_EFFECT | (ex && ex->guard ? (uint32_t)RMP3_CAP_GUARD : 0u) |
          (g_pool_bytes ? (uint32_t)RMP3_CAP_ARENA : 0u) | RMP3_CAP_FX_P16 |   // (sendfx-pages: fx_run's p[4..15])
          RMP3_CAP_UM_P32 |   // (0.5.0-pages: a machine's params_hi, P17..P32)
-         RMP3_CAP_DRAW;      // (plugin-drawn screens: rmp_plugin's draw)
+         RMP3_CAP_DRAW |     // (plugin-drawn screens: rmp_plugin's draw)
+         RMP3_CAP_FX_DRAW;   // (sendfx-draw: an effect's draw for the SEND FX pages)
 }
 void caps_names(uint32_t c, char* b, int cap) {
   static const char* const kN[] = {"transport", "arena", "guard", "stereo", "audio in", "effects", "signal bus", "block params", "pages",
-                                   "effect P5..P16", "machine P17..P32", "draw"};
+                                   "effect P5..P16", "machine P17..P32", "draw", "effect draw"};
   b[0] = 0;
   int n = 0;
   for (int k = 0; k < (int)(sizeof kN / sizeof kN[0]); ++k)
@@ -3714,6 +3762,9 @@ void begin(const Exec* e, const char* d) {
   core::hooks.user_value_text = on_value_text;   // 0.5.0-pages: stepped knobs
   core::hooks.user_draw_key = on_draw_key;       // plugin-drawn screens (rmp_api.h RMP_P_DRAW)
   core::hooks.user_draw = on_draw;
+  core::hooks.fx_draw_key = on_fx_draw_key;     // sendfx-draw: an effect's SEND FX pages
+  core::hooks.fx_draw_values = on_fx_draw_values;
+  core::hooks.fx_draw = on_fx_draw;
   core::hooks.slot_pages = on_pages;
   core::hooks.slot_hello = on_hello;
   for (int8_t& x : g_hi_sent_slot) x = -1;

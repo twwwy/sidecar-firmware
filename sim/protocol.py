@@ -1058,6 +1058,24 @@ def decode_sendfx_bw(payload):
     return dict(fx=payload[1], base=payload[2], width=payload[3])
 
 
+# 22 ver 4 SENDFX DRAWS (sendfx-draw, host -> Rytm): FX fx's effect draws its SEND FX pages (1) or not (0): the Rytm keeps
+# the screen it shows over a change to them until the host's first frame (no flash of its own page). Sent on a change,
+# with BASE / WIDTH's refresh, ASK and hello. An older 0029 drops it (its ver check).
+SENDFX_DRAWS_VER = 4
+
+
+def sendfx_draws(fx, on):
+    """22 ver 4: FX fx (0, 1), on 0 / 1."""
+    return bytes(HDR) + bytes([SENDFX_STATE, SENDFX_DRAWS_VER, fx & 1, 1 if on else 0]) + b"\xf7"
+
+
+def decode_sendfx_draws(payload):
+    """22 ver 4's payload (from the ver byte) -> dict fx, on; None if malformed."""
+    if not payload or payload[0] != SENDFX_DRAWS_VER or len(payload) != 3 or payload[1] > 1 or payload[2] > 1:
+        return None
+    return dict(fx=payload[1], on=payload[2])
+
+
 # 22 ver 3 SENDFX XKNOBS (sendfx-pages, rytm-mods 0029, issue #15): a user effect's P5..P16, held by the Sidecar (never in
 # the Rytm's kit), on the Rytm's SEND FX pages 2 (encoders A..H = P5..P12) and 3 (A..D = P13..P16). Both ways, as ver 2:
 # host -> Rytm what the knobs show (a kit load, a TYPE's defaults, ASK, hello, the 2 s refresh), Rytm -> host a turn.
@@ -1251,6 +1269,10 @@ RUI_SRC_VIEW, RUI_SRC_VALS = 0x29, 0x2A
 # as for the SRC view while any view is on. An older host drops a track byte over 11 (it never draws pages 2..4); the
 # host draws pages 2..4 only for a user machine whose plugin draws (rmp_api.h RMP_P_DRAW), else nothing (stock).
 RUI_PAGE_SRC, RUI_PAGE_SMPL, RUI_PAGE_SRC2, RUI_PAGE_SMPL2 = 1, 2, 3, 4
+# sendfx-draw: 29's SEND FX view (rmp_api.h RMP_PAGE_FX1..FX3 = 5..7): the track byte 12 (SEND FX 1) / 13 (SEND FX 2)
+# | (page - 1) << 4, page 1 (TYPE ROUTE BASE WIDTH P1..P4), 2 (P5..P12), 3 (P13..P16). An older host drops it (a track
+# over 11): the Rytm keeps its own page.
+RUI_VIEW_SENDFX1, RUI_VIEW_SENDFX2 = 12, 13
 # 1027d diagnostic, Rytm -> host 2B <state> <views> <vt0..vt4> <age>: state bits 0 view on, 1 covered, 2 committed,
 # 3 host idle >= 1 s, 4 TRK + YES open, 5 splash, 6 the host's frame shown; the controller list's length; the top
 # view's vtable (vt0 << 28 | vt1 << 21 | vt2 << 14 | vt3 << 7 | vt4: 40234cfc SamplerLedView = plain SRC); age: 50 ms ticks since it changed (127 max)
@@ -1384,6 +1406,9 @@ def decode_rui(cmd, payload):
         return dict(up=b[0] << 7 | b[1], caps=b[2], caps2=b[3] if len(b) > 3 else 0)
     if cmd == RUI_SRC_VIEW and len(b) == 2 and not b[0] & 0x40 and (b[0] & 0x0F) < 12 and b[1] <= 1:
         return dict(track=b[0] & 0x0F, on=b[1], page=(b[0] >> 4) + 1)
+    if (cmd == RUI_SRC_VIEW and len(b) == 2 and not b[0] & 0x40 and (b[0] & 0x0F) in (RUI_VIEW_SENDFX1, RUI_VIEW_SENDFX2)
+            and (b[0] >> 4) <= 2 and b[1] <= 1):
+        return dict(sendfx=(b[0] & 0x0F) - RUI_VIEW_SENDFX1, on=b[1], page=(b[0] >> 4) + 1)
     if cmd == RUI_SRC_DIAG and len(b) == 8:
         return dict(state=b[0], views=b[1], top=b[2] << 28 | b[3] << 21 | b[4] << 14 | b[5] << 7 | b[6], age=b[7])
     if cmd == RUI_SRC_VALS and len(b) >= 5 and b[0] < 12 and b[2] >= 1 and b[1] + b[2] <= 16 and len(b) == 3 + 2 * b[2]:
@@ -1399,6 +1424,13 @@ def rui_src_view(track, on, page=RUI_PAGE_SRC) -> bytes:
     if not 0 <= track < 12 or not RUI_PAGE_SRC <= page <= RUI_PAGE_SMPL2:
         raise ValueError("track 0..11, page 1..4")
     return _msg(RUI_SRC_VIEW, [track | (page - 1) << 4, 1 if on else 0])
+
+
+def rui_sendfx_view(fx, on, page=1) -> bytes:
+    """29 (Rytm -> host, sendfx-draw): SEND FX fx (0, 1)'s page 1..3 shown / left."""
+    if fx not in (0, 1) or not 1 <= page <= 3:
+        raise ValueError("fx 0..1, page 1..3")
+    return _msg(RUI_SRC_VIEW, [(RUI_VIEW_SENDFX1 + fx) | (page - 1) << 4, 1 if on else 0])
 
 
 def rui_src_vals(track, first, values) -> bytes:

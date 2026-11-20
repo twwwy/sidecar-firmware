@@ -472,7 +472,7 @@ struct State {
   // 1027: the SRC view: the track whose stock SRC page the Rytm shows (-1 none), whether we draw it (1: frames sent
   // since its 29 t 1, 0 none, -1 not decided yet), the Rytm's own values of each track's P1..P16 (2A; `src_known` which came), the one
   // changed last (2A n 1: the bottom bar names it)
-  int8_t src_track = -1, src_told = -1, src_last = -1;
+  int8_t src_track = -1, src_told = -1, src_last = -1;   // src_told 2: not decided yet, the view before showed a plugin's frame
   int8_t src_page = 1;   // plugin-drawn screens: the view's page (RMP_PAGE_*: 1 SRC, 2 SMPL, 3 SRC page 2, 4 SMPL page 2)
 #if CORE_MSAMP
   // Plugin-drawn screens (hooks.user_draw): the inputs of the last draw (ud_key, 0 none since the view's 29), its answer
@@ -481,6 +481,12 @@ struct State {
   int8_t ud_res = -1;
   bool ud_shown = false;   // the last frame of the view was the plugin's (a switch to the host's page redraws it whole)
   uint8_t ud_fb[kBytes] = {};
+  // sendfx-draw: the SEND FX view (29 <12 | 13 + (page - 1) << 4> <on>): its send slot (-1 none) and page 1..3, the
+  // inputs of its last draw (fx_key, 0 none since the view's 29) and its answer (1 drawn, 0 declined, -1 no draw); each
+  // slot's pages' last frames by their inputs (a page flipped back to with nothing changed needs no draw)
+  int8_t fx_view = -1, fx_page = 1, fx_res = -1;
+  uint32_t fx_key = 0;
+  struct FxFrame { uint32_t key; uint8_t fb[kBytes]; } fxc[2][3] = {};
 #endif
   uint8_t srcv[12][16] = {};
   // 1027e: a track's sound values while a held step's (2A <t | 0x40>) are drawn: put back at its unflagged 2A or at
@@ -1056,7 +1062,12 @@ CORE_COLD void src_unhold(int t) {
       if (k == s.src_track) s.input = true;
     }
 }
-CORE_COLD int page_key() { return s.open ? s.voice : 1000 + s.src_track; }
+CORE_COLD int page_key() {   // (commit_held paces commits within one page)
+#if CORE_MSAMP
+  if (!s.open && s.fx_view >= 0) return 2000 + 4 * s.fx_view + s.fx_page;
+#endif
+  return s.open ? s.voice : 1000 + s.src_track;
+}
 CORE_COLD bool commit_held(uint32_t ms) {
   return !s.legacy && s.sent_valid && !s.user && page_key() == s.commit_page && rytm_plays() &&
          ms - s.commit_ms < (s.src_user ? kSrcUserMs : kPlayCommitMs);
@@ -1228,8 +1239,19 @@ CORE_COLD const Page* track_page(int t) {   // DSP SAMPLE's GRAIN view by the Ry
   return src_list_page(chord_view_page(src_view_page(page_for_voice(m, kTrackVoice[t], s.src_known[t] >> 11 & 1 ? s.srcv[t][11] : -1)), tsrc), tsrc);
 }
 
+// the view showing now has a plugin's frame (a user machine's page or an effect's SEND FX page), committed to the Rytm
+CORE_COLD bool plug_shown() {
+#if CORE_MSAMP
+  if (s.src_told != 1) return false;
+  return s.fx_view >= 0 ? s.fx_res == 1 : s.src_track >= 0 && s.ud_shown;
+#else
+  return false;
+#endif
+}
 CORE_COLD void src_draws(bool page) {
-  if (!page && s.src_told == 1 && !s.open) remote_request(false);   // 3A 0 0: stock again until our next commit
+  // 3A 0 0: stock again until our next commit - also when the view before showed a plugin's frame (2): the Rytm keeps
+  // that over a page change until the new view's first commit, so a page we do not draw gets its own back at once
+  if (!page && s.src_told >= 1 && !s.open) remote_request(false);
   s.src_told = (int8_t)(page ? 1 : 0);
 }
 
@@ -1270,11 +1292,46 @@ CORE_COLD bool user_frame(int t) {
 }
 #endif
 
+// A view's frame (work) out: the changed tiles and texts since the last commit (all of them after the view's on),
+// paced by commit_held; t names the view in the log (a track 0..11; 12 / 13 SEND FX 1 / 2)
+CORE_COLD void view_commit(uint32_t ms, int t) {
+  uint32_t mask[4] = {0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu};
+  uint64_t texts = 0;
+  wire = &work;   // (a box has no SRC view)
+  int tiles = s.sent_valid ? work.diff_tiles(sent, mask) : kTiles;
+#if CORE_UI_TOOLS
+  work.check_overlap();
+#endif
+  if (s.sent_valid) work.diff_text(sent, &texts);
+  else
+    for (int i = 0; i < kTextSlots; ++i)
+      if (work.txt[i].s[0]) texts |= 1ull << i;
+  if ((tiles || texts) && !commit_held(ms)) {
+    bool whole = !s.sent_valid;
+    send_part(mask, texts, whole);
+    committed(ms);
+    sent = work;
+    s.sent_valid = true;
+    s.last_tx = ms;
+    s.stats.tiles += (uint32_t)tiles;
+    s.stats.src_frames++;
+    if (src_log) core::log("rui src: commit %lu ms, %s %d, %d tiles, texts %llx%s", (unsigned long)ms, t >= 12 ? "send fx" : "track",
+                     t >= 12 ? t - 11 : t, tiles, (unsigned long long)texts, whole ? " (whole)" : "");
+  }
+}
+CORE_COLD void view_alive(uint32_t ms) {   // 3C while a view lasts
+  if (ms - s.last_tx >= kAliveMs) {
+    send_short(kAlive, nullptr, 0);
+    s.last_tx = ms;
+    s.stats.keepalives++;
+  }
+}
+
 CORE_COLD void src_tick(uint32_t ms) {
   int t = s.src_track;
   bool plug = false;   // plugin-drawn screens: the plugin's frame
 #if CORE_MSAMP
-  if (s.input || !s.clock_set || s.src_told < 0 || ms - s.last_draw >= kTickMs) plug = user_frame(t);   // (at the draw rate)
+  if (s.input || !s.clock_set || s.src_told < 0 || s.src_told == 2 || ms - s.last_draw >= kTickMs) plug = user_frame(t);   // (at the draw rate)
   else plug = s.ud_res == 1 && s.ud_key;
   if (plug != s.ud_shown) s.ud_shown = plug, s.page_changed = true, s.input = true;
 #endif
@@ -1317,38 +1374,74 @@ CORE_COLD void src_tick(uint32_t ms) {
       }
     }
     s.stats.widgets += (uint32_t)drawn;
-    uint32_t mask[4] = {0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu, 0xFFFFFFFFu};
-    uint64_t texts = 0;
-    wire = &work;   // (a box has no SRC view)
-    int tiles = s.sent_valid ? work.diff_tiles(sent, mask) : kTiles;
-#if CORE_UI_TOOLS
-    work.check_overlap();
-#endif
-    if (s.sent_valid) work.diff_text(sent, &texts);
-    else
-      for (int i = 0; i < kTextSlots; ++i)
-        if (work.txt[i].s[0]) texts |= 1ull << i;
-    if ((tiles || texts) && !commit_held(ms)) {
-      bool whole = !s.sent_valid;
-      send_part(mask, texts, whole);
-      committed(ms);
-      sent = work;
-      s.sent_valid = true;
-      s.last_tx = ms;
-      s.stats.tiles += (uint32_t)tiles;
-      s.stats.src_frames++;
-      if (src_log) core::log("rui src: commit %lu ms, track %d, %d tiles, texts %llx%s", (unsigned long)ms, t, tiles,
-                       (unsigned long long)texts, whole ? " (whole)" : "");
-    }
+    view_commit(ms, t);
     s.stats.page = 4;
     s.stats.voice = (uint8_t)t;
   }
-  if (ms - s.last_tx >= kAliveMs) {
-    send_short(kAlive, nullptr, 0);
-    s.last_tx = ms;
-    s.stats.keepalives++;
-  }
+  view_alive(ms);
 }
+
+#if CORE_MSAMP
+// sendfx-draw (docs/um-pages.md "An effect's pages"): the SEND FX view drawn by the user effect its send slot plays.
+// Inputs: the effect's P1..P16 and TYPE / ROUTE (hooks.fx_draw_values), BASE / WIDTH (bus 1 / 2's POST EQ), the page,
+// fx_draw_key; checked at the draw rate (an FX knob's word comes through 0x20, not as an input of this view), drawn on
+// a change only, and a frame already drawn for the same inputs (this page shown before) taken without a draw.
+constexpr int kPageFx1 = 5;   // sdk/rmp/rmp_api.h RMP_PAGE_FX1 (FX2, FX3 follow)
+CORE_COLD bool fx_frame() {
+  const int sl = s.fx_view, pg = s.fx_page;
+  const uint32_t dk = hooks.fx_draw_key && hooks.fx_draw_values && hooks.fx_draw ? hooks.fx_draw_key(sl) : 0u;
+  if (!dk) {
+    s.fx_res = -1, s.fx_key = 0;
+    return false;
+  }
+  float p[20];
+  hooks.fx_draw_values(sl, p);
+  int base = 0, width = 127;
+#if CORE_POLY
+  ins::eq_bw(ins::kBus0 + sl, &base, &width);
+#endif
+  p[18] = (float)base, p[19] = (float)width;
+  uint32_t h = 2166136261u;
+  auto mix = [&](uint32_t x) { for (int i = 0; i < 4; ++i) h = (h ^ (x >> (8 * i) & 0xFF)) * 16777619u; };
+  mix(dk), mix((uint32_t)sl), mix((uint32_t)pg);
+  for (float x : p) mix((uint32_t)(x * 128.0f));
+  if (!h) h = 1;
+  if (h == s.fx_key) return s.fx_res == 1;
+  if (s.fx_key && !s.open) s.src_user = true;   // the same view, a value changed: the user's own knob (kSrcUserMs)
+  s.fx_key = h;
+  State::FxFrame& c = s.fxc[sl][pg - 1];
+  const bool cached = c.key == h;
+  if (cached) {
+    s.fx_res = 1, s.stats.fx_cached++;
+  } else {
+    static uint8_t rows[kBytes];   // (the plugin's row-major frame)
+    s.stats.user_draws++;
+    s.fx_res = (int8_t)(hooks.fx_draw(sl, kPageFx1 + pg - 1, p, rows) == 1 ? 1 : 0);
+    if (s.fx_res == 1) rows_to_fb(rows, c.fb), c.key = h, s.stats.user_drawn++;
+    else c.key = 0;
+  }
+  if (src_log) core::log("rui src: send fx %d page %d: %s", sl + 1, pg, s.fx_res != 1 ? "declined" : cached ? "kept frame" : "drawn");
+  return s.fx_res == 1;
+}
+CORE_COLD void fx_tick(uint32_t ms) {
+  bool plug = (s.input || !s.clock_set || s.src_told < 0 || s.src_told == 2 || ms - s.last_draw >= kTickMs) ? fx_frame() : s.fx_res == 1 && s.fx_key;
+  if ((plug ? 1 : 0) != s.src_told) {
+    src_draws(plug);   // not ours: 3A 0 0 gives the Rytm its own page back at once
+    if (plug) s.sent_valid = false, s.clock_set = false;   // the Rytm's shadow: a whole frame
+  }
+  if (!plug) return;
+  if (!s.clock_set) s.clock_set = true, s.last_draw = ms - kTickMs, s.last_tx = ms;
+  if (s.input || ms - s.last_draw >= kTickMs) {
+    s.last_draw = ms;
+    s.input = false;
+    memcpy(work.fb, s.fxc[s.fx_view][s.fx_page - 1].fb, kBytes);
+    work.clear_text();
+    view_commit(ms, 12 + s.fx_view);
+    s.stats.page = 4;
+  }
+  view_alive(ms);
+}
+#endif
 
 // The splash at t ms: the stock title bar (the product's name, USB at its right), the icon (sliding in from the left
 // for kSlideMs), CONNECTED in the Rytm's bold font, the voices and send FX, the network address (or the link), a line
@@ -1922,14 +2015,36 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
     }
     case kSrcView: {   // 1027: <track> <on>; plugin-drawn screens: <track | (page - 1) << 4> <on>
       const int t = b[0] & 0x0F, pg = (b[0] >> 4 & 3) + 1;
+#if CORE_MSAMP
+      // sendfx-draw: <12 | 13 (SEND FX 1 | 2) + (page - 1) << 4> <on>, page 1..3: the SEND FX view (fx_tick)
+      if (n >= 2 && !(b[0] & 0x40) && (t == 12 || t == 13) && pg <= 3 && b[1] <= 1) {
+        const int sl = t - 12;
+        s.stats.fx_views++;
+        if (src_log) core::log("rui src: 29 %lu ms, send fx %d, page %d, %s", (unsigned long)now_ms(), sl + 1, pg, b[1] ? "on" : "off");
+        if (b[1]) {
+          if (s.src_track >= 0) src_unhold(-1);
+          s.src_track = -1, s.src_page = 1;   // one view at a time: this one replaces a track's
+          s.fx_view = (int8_t)sl, s.fx_page = (int8_t)pg;
+          s.src_told = plug_shown() ? 2 : -1, s.fx_key = 0;   // drawn (or its kept frame taken) at once, a whole frame after this 29
+          s.input = true;
+        } else if (sl == s.fx_view && pg == s.fx_page) {
+          s.fx_view = -1, s.src_told = -1, s.fx_key = 0;
+          if (!s.open) s.sent_valid = false;   // the Rytm's own screen is back: its shadow is not ours
+        }
+        return;
+      }
+#endif
       if (n < 2 || (b[0] & 0x40) || t >= 12 || b[1] > 1) break;
       s.stats.src_views++;
       src_unhold(-1);
       if (src_log) core::log("rui src: 29 %lu ms, track %d, page %d, %s", (unsigned long)now_ms(), t, pg, b[1] ? "on" : "off");
       if (b[1]) {
         s.src_track = (int8_t)t, s.src_page = (int8_t)pg;
+#if CORE_MSAMP
+        s.fx_view = -1, s.fx_key = 0;   // one view at a time: a track's replaces the SEND FX view
+#endif
         src_list_quiet();
-        s.src_told = -1;   // a whole frame at the next tick: the Rytm shows ours only after a 39 since this 29
+        s.src_told = plug_shown() ? 2 : -1;   // a whole frame at the next tick: the Rytm shows ours only after a 39 since this 29
         s.src_last = -1;   // a splash running (a hello just before) ends first, then the view's whole frame
 #if CORE_MSAMP
         s.ud_key = 0;      // the plugin draws again for the new view (once, then on a change)
@@ -2151,6 +2266,9 @@ CORE_COLD void remote_sysex(const uint8_t* d, int len) {
       if (s.open) s.stats.closes++;
       s.open = false, s.leds_on = false, s.mask_valid = false, s.echo_valid = false, s.sent_valid = false;
       s.src_track = -1, s.src_told = -1, s.src_page = 1, s.splash = false, s.clock_set = false;
+#if CORE_MSAMP
+      s.fx_view = -1, s.fx_key = 0;   // (its view says 29 again after the hello)
+#endif
       tap_enable(false);
       s.caps36 = (b[2] & 1) != 0, s.caps = b[2], s.caps2 = n >= 4 ? b[3] : 0;
       mod::rytm_host_cmd((b[2] & mod::kCapsHostCmd) != 0);   // 0.5.0: the mod command (core/mod/rytm_out.h)
@@ -2233,6 +2351,9 @@ CORE_COLD void remote_tick(uint32_t ms) {
   if (s.popup && s.popup_over && !s.open) { popup_tick(ms); return; }
   if (s.splash && !s.open) { splash_tick(ms); return; }
   if (s.popup && !s.open && s.src_track < 0) { popup_tick(ms); return; }
+#if CORE_MSAMP
+  if (!s.open && s.fx_view >= 0) { fx_tick(ms); return; }
+#endif
   if (!s.open && s.src_track >= 0) { src_tick(ms); return; }
   if (!s.open) return;
   wave_idle(ms);   // a sample overview being read (page_wave.cpp): one column at most
